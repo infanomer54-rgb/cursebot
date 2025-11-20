@@ -4,14 +4,12 @@ import sqlite3
 import re
 import asyncio
 from datetime import datetime
-from enum import Enum
+import json
 
 import requests
 import PyPDF2
 import docx2txt
 import aiofiles
-from docx import Document
-from docx.shared import Inches
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -34,18 +32,6 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-class WorkType(Enum):
-    COURSEWORK = "coursework"
-    ESSAY = "essay" 
-    THESIS = "thesis"
-
-class WorkStage(Enum):
-    TOPIC = "topic"
-    METHODIC = "methodic"
-    STRUCTURE = "structure"
-    CONTENT = "content"
-    COMPLETE = "complete"
 
 class Database:
     def __init__(self, db_path="bot_database.db"):
@@ -75,7 +61,7 @@ class Database:
                 subject TEXT,
                 structure TEXT,
                 content TEXT,
-                methodic_id INTEGER,
+                methodic_info TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -106,13 +92,14 @@ class Database:
         conn.commit()
         conn.close()
     
-    def create_work(self, user_id, work_type, topic, subject, methodic_id=None):
+    def create_work(self, user_id, work_type, topic, subject, methodic_info=None):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        methodic_json = json.dumps(methodic_info) if methodic_info else None
         cursor.execute('''
-            INSERT INTO works (user_id, work_type, topic, subject, methodic_id)
+            INSERT INTO works (user_id, work_type, topic, subject, methodic_info)
             VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, work_type, topic, subject, methodic_id))
+        ''', (user_id, work_type, topic, subject, methodic_json))
         work_id = cursor.lastrowid
         conn.commit()
         conn.close()
@@ -131,6 +118,14 @@ class Database:
         cursor.execute('UPDATE works SET content = ? WHERE id = ?', (content, work_id))
         conn.commit()
         conn.close()
+    
+    def get_work(self, work_id):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM works WHERE id = ?', (work_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return result
     
     def add_methodic(self, filename, file_path, requirements, structure, formatting, user_id):
         conn = sqlite3.connect(self.db_path)
@@ -238,15 +233,24 @@ class AcademicWriter:
         """Генерирует структуру работы"""
         
         work_type_names = {
-            WorkType.COURSEWORK.value: "курсовой работы",
-            WorkType.ESSAY.value: "реферата", 
-            WorkType.THESIS.value: "дипломной работы"
+            "coursework": "курсовой работы",
+            "essay": "реферата", 
+            "thesis": "дипломной работы"
         }
+        
+        methodic_text = ""
+        if methodic_info:
+            methodic_text = f"""
+УЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ:
+Требования: {methodic_info.get('requirements', [])}
+Структура: {methodic_info.get('structure', [])}
+Оформление: {methodic_info.get('formatting', [])}
+"""
         
         system_prompt = f"""
 Ты - эксперт по созданию академических работ. Создай подробную структуру для {work_type_names[work_type]} на тему "{topic}" по предмету "{subject}".
 
-{"УЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ: " + str(methodic_info) if methodic_info else ""}
+{methodic_text}
 
 Создай подробную структуру включая:
 1. Титульный лист
@@ -260,76 +264,149 @@ class AcademicWriter:
 Верни только чистую структуру без лишних комментариев.
 """
         
-        return self._make_api_call(system_prompt, "Создаю структуру работы...")
+        return self._make_api_call(system_prompt, "Создай подробную структуру академической работы.")
     
-    def generate_section(self, work_type, topic, subject, section_name, section_guidance, methodic_info=None, previous_content=""):
-        """Генерирует содержание раздела"""
+    def generate_introduction(self, work_type, topic, subject, structure, methodic_info=None):
+        """Генерирует введение"""
+        
+        methodic_text = ""
+        if methodic_info:
+            methodic_text = f"\nУЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ: {methodic_info}"
         
         system_prompt = f"""
-Ты - профессиональный академический писатель. Напиши раздел "{section_name}" для {work_type} на тему "{topic}" по предмету "{subject}".
+Ты - профессиональный академический писатель. Напиши ВВЕДЕНИЕ для {work_type} на тему "{topic}" по предмету "{subject}".
 
-РУКОВОДСТВО ПО РАЗДЕЛУ: {section_guidance}
+СТРУКТУРА РАБОТЫ:
+{structure}
+{methodic_text}
 
-{"ТРЕБОВАНИЯ МЕТОДИЧКИ: " + str(methodic_info) if methodic_info else ""}
+Введение должно содержать:
+1. Актуальность темы
+2. Цель работы
+3. Задачи исследования
+4. Объект и предмет исследования
+5. Методы исследования
+6. Теоретическая и практическая значимость
 
-{"ПРЕДЫДУЩЕЕ СОДЕРЖАНИЕ: " + previous_content if previous_content else ""}
+Объем: {self._get_section_volume(work_type, 'введение')}
+Стиль: академический, научный
 
-Напиши полноценный, качественный академический текст:
-- Используй научный стиль
-- Приводи конкретные примеры и данные
-- Соблюдай логическую последовательность
-- Объем: {self._get_section_volume(work_type, section_name)}
-- Используй подзаголовки если необходимо
-
-Верни только чистый текст раздела без комментариев.
+Верни только текст введения без заголовка.
 """
         
-        return self._make_api_call(system_prompt, f"Пишу раздел '{section_name}'...")
+        return self._make_api_call(system_prompt, "Напиши качественное введение для академической работы.")
+    
+    def generate_main_part(self, work_type, topic, subject, structure, methodic_info=None):
+        """Генерирует основную часть"""
+        
+        methodic_text = ""
+        if methodic_info:
+            methodic_text = f"\nУЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ: {methodic_info}"
+        
+        system_prompt = f"""
+Ты - профессиональный академический писатель. Напиши ОСНОВНУЮ ЧАСТЬ для {work_type} на тему "{topic}" по предмету "{subject}".
+
+СТРУКТУРА РАБОТЫ:
+{structure}
+{methodic_text}
+
+Основная часть должна:
+1. Глубоко раскрывать тему
+2. Содержать теоретический анализ
+3. Включать практические аспекты (если применимо)
+4. Быть логически структурированной
+5. Содержать примеры, данные, исследования
+
+Объем: {self._get_section_volume(work_type, 'основная часть')}
+Стиль: академический, научный
+
+Верни только текст основной части без заголовка.
+"""
+        
+        return self._make_api_call(system_prompt, "Напиши развернутую основную часть для академической работы.")
+    
+    def generate_conclusion(self, work_type, topic, subject, structure, methodic_info=None):
+        """Генерирует заключение"""
+        
+        methodic_text = ""
+        if methodic_info:
+            methodic_text = f"\nУЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ: {methodic_info}"
+        
+        system_prompt = f"""
+Ты - профессиональный академический писатель. Напиши ЗАКЛЮЧЕНИЕ для {work_type} на тему "{topic}" по предмету "{subject}".
+
+СТРУКТУРА РАБОТЫ:
+{structure}
+{methodic_text}
+
+Заключение должно содержать:
+1. Основные выводы по работе
+2. Достигнута ли цель
+3. Решены ли задачи
+4. Практическую значимость работы
+5. Перспективы дальнейшего исследования
+
+Объем: {self._get_section_volume(work_type, 'заключение')}
+Стиль: академический, научный
+
+Верни только текст заключения без заголовка.
+"""
+        
+        return self._make_api_call(system_prompt, "Напиши качественное заключение для академической работы.")
     
     def generate_full_work(self, work_type, topic, subject, structure, methodic_info=None):
         """Генерирует полный текст работы"""
         
+        methodic_text = ""
+        if methodic_info:
+            methodic_text = f"\nТРЕБОВАНИЯ МЕТОДИЧКИ: {methodic_info}"
+        
         system_prompt = f"""
-Ты - профессиональный академический писатель. Напиши полный текст {work_type} на тему "{topic}" по предмету "{subject}".
+Ты - профессиональный академический писатель. Напиши ПОЛНЫЙ ТЕКСТ {work_type} на тему "{topic}" по предмету "{subject}".
 
 СТРУКТУРА РАБОТЫ:
 {structure}
+{methodic_text}
 
-{"ТРЕБОВАНИЯ МЕТОДИЧКИ: " + str(methodic_info) if methodic_info else ""}
+Напиши полноценную академическую работу включая:
+1. Введение (актуальность, цели, задачи)
+2. Основную часть (теоретическая и практическая части)
+3. Заключение (выводы и результаты)
+4. Список литературы
 
-Требования к работе:
-1. Академический стиль изложения
-2. Глубокое раскрытие темы
-3. Научная обоснованность
-4. Логическая последовательность
-5. Соответствие структуре
-6. Объем: {self._get_work_volume(work_type)}
+Требования:
+- Академический стиль изложения
+- Глубокое раскрытие темы
+- Научная обоснованность
+- Логическая последовательность
+- Объем: {self._get_work_volume(work_type)}
+- Конкретные примеры и данные
 
-Напиши полноценную готовую к сдаче работу включая все разделы.
+Верни полный текст работы готовый к сдаче.
 """
         
-        return self._make_api_call(system_prompt, "Пишу полный текст работы...")
+        return self._make_api_call(system_prompt, "Напиши полный текст академической работы.")
     
     def _get_work_volume(self, work_type):
         volumes = {
-            WorkType.ESSAY.value: "15-25 страниц",
-            WorkType.COURSEWORK.value: "30-50 страниц", 
-            WorkType.THESIS.value: "60-100 страниц"
+            "essay": "15-25 страниц",
+            "coursework": "30-50 страниц", 
+            "thesis": "60-100 страниц"
         }
         return volumes.get(work_type, "20-40 страниц")
     
     def _get_section_volume(self, work_type, section_name):
         base_volumes = {
-            WorkType.ESSAY.value: {"введение": "2-3 стр", "основная часть": "10-15 стр", "заключение": "2-3 стр"},
-            WorkType.COURSEWORK.value: {"введение": "3-5 стр", "основная часть": "20-35 стр", "заключение": "3-5 стр"},
-            WorkType.THESIS.value: {"введение": "5-8 стр", "основная часть": "45-80 стр", "заключение": "5-8 стр"}
+            "essay": {"введение": "2-3 стр", "основная часть": "10-15 стр", "заключение": "2-3 стр"},
+            "coursework": {"введение": "3-5 стр", "основная часть": "20-35 стр", "заключение": "3-5 стр"},
+            "thesis": {"введение": "5-8 стр", "основная часть": "45-80 стр", "заключение": "5-8 стр"}
         }
         volume_info = base_volumes.get(work_type, {})
         return volume_info.get(section_name.lower(), "5-10 страниц")
     
     def _make_api_call(self, system_prompt, user_prompt):
         if not self.api_key:
-            return "❌ API ключ не настроен"
+            return "❌ Ошибка: API ключ DeepSeek не настроен"
         
         headers = {
             "Content-Type": "application/json",
@@ -347,76 +424,34 @@ class AcademicWriter:
         }
         
         try:
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=60)
+            logger.info("Отправка запроса к DeepSeek API...")
+            response = requests.post(self.api_url, headers=headers, json=data, timeout=120)
             response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
-        except Exception as e:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        except requests.exceptions.Timeout:
+            return "⏰ Время ожидания истекло. Попробуйте еще раз."
+        except requests.exceptions.RequestException as e:
             logger.error(f"API error: {e}")
-            return f"❌ Ошибка генерации: {str(e)}"
-
-class DocxGenerator:
-    def create_document(self, work_type, topic, subject, content, filename):
-        """Создает DOCX документ с работой"""
-        try:
-            doc = Document()
-            
-            # Титульный лист
-            title = doc.add_heading(f'{self._get_work_type_name(work_type)}', 0)
-            title.alignment = 1
-            
-            doc.add_heading(f'по предмету: "{subject}"', 1).alignment = 1
-            doc.add_heading(f'на тему: "{topic}"', 1).alignment = 1
-            doc.add_page_break()
-            
-            # Содержание
-            doc.add_heading('СОДЕРЖАНИЕ', level=1)
-            doc.add_paragraph("Введение")
-            doc.add_paragraph("Основная часть") 
-            doc.add_paragraph("Заключение")
-            doc.add_paragraph("Список литературы")
-            doc.add_page_break()
-            
-            # Основной текст
-            paragraphs = content.split('\n\n')
-            for paragraph in paragraphs:
-                if paragraph.strip():
-                    if any(keyword in paragraph.lower() for keyword in ['введение', 'глава', 'заключение', 'литература']):
-                        doc.add_heading(paragraph, level=1)
-                    else:
-                        doc.add_paragraph(paragraph)
-            
-            # Сохраняем файл
-            filepath = os.path.join("работы", filename)
-            doc.save(filepath)
-            return filepath
-            
+            return "❌ Ошибка соединения с сервисом."
         except Exception as e:
-            logger.error(f"DOCX error: {e}")
-            return None
-    
-    def _get_work_type_name(self, work_type):
-        names = {
-            WorkType.ESSAY.value: "РЕФЕРАТ",
-            WorkType.COURSEWORK.value: "КУРСОВАЯ РАБОТА",
-            WorkType.THESIS.value: "ДИПЛОМНАЯ РАБОТА"
-        }
-        return names.get(work_type, "АКАДЕМИЧЕСКАЯ РАБОТА")
+            logger.error(f"Unexpected error: {e}")
+            return f"❌ Ошибка генерации: {str(e)}"
 
 class CourseworkBot:
     def __init__(self):
         self.db = Database()
         self.doc_processor = DocumentProcessor()
         self.writer = AcademicWriter()
-        self.docx_generator = DocxGenerator()
         self.user_sessions = {}
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         self.db.add_user(user.id, user.username, user.first_name, user.last_name)
         
-        welcome_text = f"""🎓 <b>Академический помощник</b>
+        welcome_text = f"""🎓 <b>Академический помощник - Автописатель</b>
 
-Привет, {user.first_name}! Я напишу для тебя полноценную академическую работу.
+Привет, {user.first_name}! Я напишу для тебя полноценную академическую работу с нуля.
 
 Выбери тип работы:"""
 
@@ -441,7 +476,7 @@ class CourseworkBot:
             work_type = data.split('_')[1]
             self.user_sessions[user_id] = {
                 'work_type': work_type,
-                'stage': WorkStage.TOPIC.value
+                'stage': 'subject'
             }
             
             work_names = {
@@ -473,70 +508,65 @@ class CourseworkBot:
         
         current_stage = session.get('stage')
         
-        if current_stage == WorkStage.TOPIC.value:
+        if current_stage == 'subject':
             # Получили предмет, запрашиваем тему
             session['subject'] = user_message
-            session['stage'] = WorkStage.METHODIC.value
+            session['stage'] = 'topic'
+            self.user_sessions[user_id] = session
+            
+            await update.message.reply_text(
+                f"📚 Предмет: <b>{user_message}</b>\n\nТеперь введите тему работы:",
+                parse_mode='HTML'
+            )
+        
+        elif current_stage == 'topic':
+            # Получили тему, предлагаем выбрать методичку или продолжить без нее
+            session['topic'] = user_message
+            session['stage'] = 'methodic_choice'
             self.user_sessions[user_id] = session
             
             methodics = self.db.get_methodics()
             if methodics:
                 keyboard = []
                 for methodic_id, filename in methodics:
-                    display_name = filename[:30] + "..." if len(filename) > 30 else filename
+                    display_name = filename[:25] + "..." if len(filename) > 25 else filename
                     keyboard.append([InlineKeyboardButton(f"📄 {display_name}", callback_data=f"methodic_{methodic_id}")])
                 keyboard.append([InlineKeyboardButton("🚫 Без методички", callback_data="no_methodic")])
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await update.message.reply_text(
-                    f"📚 Предмет: <b>{user_message}</b>\n\nТеперь введите тему работы:",
+                    f"🎯 Тема: <b>{user_message}</b>\n\nВыберите методичку или продолжите без нее:",
                     reply_markup=reply_markup,
                     parse_mode='HTML'
                 )
             else:
-                await update.message.reply_text(
-                    f"📚 Предмет: <b>{user_message}</b>\n\nТеперь введите тему работы:",
-                    parse_mode='HTML'
-                )
+                await self.start_generation(update, session, None)
+    
+    async def start_generation(self, update, session, methodic_info):
+        """Начинает процесс генерации работы"""
+        user_id = session['user_id'] if 'user_id' in session else update.effective_user.id
         
-        elif current_stage == WorkStage.METHODIC.value:
-            # Получили тему, переходим к генерации структуры
-            session['topic'] = user_message
-            session['stage'] = WorkStage.STRUCTURE.value
-            self.user_sessions[user_id] = session
-            
-            # Создаем запись в БД
-            work_id = self.db.create_work(
-                user_id=user_id,
-                work_type=session['work_type'],
-                topic=session['topic'],
-                subject=session['subject'],
-                methodic_id=session.get('methodic_id')
-            )
-            session['work_id'] = work_id
-            self.user_sessions[user_id] = session
-            
-            await self.generate_structure(update, session)
+        # Создаем запись в БД
+        work_id = self.db.create_work(
+            user_id=user_id,
+            work_type=session['work_type'],
+            topic=session['topic'],
+            subject=session['subject'],
+            methodic_info=methodic_info
+        )
+        session['work_id'] = work_id
+        self.user_sessions[user_id] = session
         
-        elif current_stage == WorkStage.CONTENT.value:
-            # Обработка дополнительных запросов по содержанию
-            await update.message.reply_text("⏳ Обрабатываю ваш запрос...")
+        # Начинаем генерацию структуры
+        await self.generate_structure(update, session)
     
     async def generate_structure(self, update, session):
         """Генерирует структуру работы"""
-        user_id = session['user_id'] if 'user_id' in session else update.effective_user.id
+        generating_msg = await update.message.reply_text("🔄 Создаю структуру работы...")
         
         methodic_info = None
-        if session.get('methodic_id'):
-            methodic_data = self.db.get_methodic(session['methodic_id'])
-            if methodic_data:
-                methodic_info = {
-                    'requirements': methodic_data[3],
-                    'structure': methodic_data[4],
-                    'formatting': methodic_data[5]
-                }
-        
-        generating_msg = await update.message.reply_text("🔄 Создаю структуру работы...")
+        if session.get('methodic_info'):
+            methodic_info = session['methodic_info']
         
         structure = self.writer.generate_structure(
             work_type=session['work_type'],
@@ -545,23 +575,27 @@ class CourseworkBot:
             methodic_info=methodic_info
         )
         
-        if structure.startswith("❌"):
-            await generating_msg.edit_text(structure)
+        if structure.startswith("❌") or structure.startswith("⏰"):
+            await generating_msg.edit_text(f"❌ Не удалось создать структуру: {structure}")
             return
         
         # Сохраняем структуру
         self.db.update_work_structure(session['work_id'], structure)
         
         keyboard = [
-            [InlineKeyboardButton("✅ Сгенерировать полный текст", callback_data="generate_full")],
-            [InlineKeyboardButton("🔄 Изменить структуру", callback_data="regenerate_structure")]
+            [InlineKeyboardButton("✅ Написать полную работу", callback_data="generate_full")],
+            [InlineKeyboardButton("📝 Написать по частям", callback_data="generate_parts")],
+            [InlineKeyboardButton("🔄 Перегенерировать структуру", callback_data="regenerate_structure")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        # Разбиваем длинное сообщение на части
+        structure_preview = structure[:1500] + "..." if len(structure) > 1500 else structure
+        
         await generating_msg.edit_text(
             f"📋 <b>Структура работы готова!</b>\n\n"
-            f"{structure}\n\n"
-            f"Хотите сгенерировать полный текст работы?",
+            f"{structure_preview}\n\n"
+            f"Выберите дальнейшее действие:",
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
@@ -577,14 +611,24 @@ class CourseworkBot:
         session = self.user_sessions.get(user_id, {})
         
         if data == 'no_methodic':
-            session['methodic_id'] = None
+            session['methodic_info'] = None
             self.user_sessions[user_id] = session
-            await query.edit_message_text("📝 Введите тему работы:")
+            await self.start_generation(query, session, None)
         elif data.startswith('methodic_'):
             methodic_id = int(data.split('_')[1])
-            session['methodic_id'] = methodic_id
-            self.user_sessions[user_id] = session
-            await query.edit_message_text("📝 Введите тему работы:")
+            methodic_data = self.db.get_methodic(methodic_id)
+            if methodic_data:
+                methodic_info = {
+                    'requirements': methodic_data[3],
+                    'structure': methodic_data[4],
+                    'formatting': methodic_data[5]
+                }
+                session['methodic_info'] = methodic_info
+                session['methodic_id'] = methodic_id
+                self.user_sessions[user_id] = session
+                await self.start_generation(query, session, methodic_info)
+            else:
+                await query.message.reply_text("❌ Методичка не найдена")
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик загрузки методичек"""
@@ -644,27 +688,23 @@ class CourseworkBot:
         
         if data == 'generate_full':
             await self.generate_full_work(query, session)
+        elif data == 'generate_parts':
+            await self.generate_by_parts(query, session)
         elif data == 'regenerate_structure':
             await self.generate_structure(query, session)
     
     async def generate_full_work(self, query, session):
         """Генерирует полный текст работы"""
-        generating_msg = await query.message.reply_text("🔄 Пишу полный текст работы...\nЭто может занять несколько минут.")
+        generating_msg = await query.message.reply_text(
+            "🔄 Пишу полный текст работы...\n"
+            "Это может занять 2-5 минут. Пожалуйста, подождите."
+        )
         
-        # Получаем структуру
-        work_data = self.db.get_methodic(session['work_id'])  # Временно используем эту функцию
-        structure = work_data[3] if work_data else ""
+        # Получаем структуру из БД
+        work_data = self.db.get_work(session['work_id'])
+        structure = work_data[5] if work_data else ""
         
-        # Получаем информацию о методичке если есть
-        methodic_info = None
-        if session.get('methodic_id'):
-            methodic_data = self.db.get_methodic(session['methodic_id'])
-            if methodic_data:
-                methodic_info = {
-                    'requirements': methodic_data[3],
-                    'structure': methodic_data[4],
-                    'formatting': methodic_data[5]
-                }
+        methodic_info = session.get('methodic_info')
         
         # Генерируем полный текст
         full_content = self.writer.generate_full_work(
@@ -675,50 +715,61 @@ class CourseworkBot:
             methodic_info=methodic_info
         )
         
-        if full_content.startswith("❌"):
-            await generating_msg.edit_text(full_content)
+        if full_content.startswith("❌") or full_content.startswith("⏰"):
+            await generating_msg.edit_text(f"❌ Не удалось создать работу: {full_content}")
             return
         
         # Сохраняем контент
         self.db.update_work_content(session['work_id'], full_content)
         
-        # Создаем DOCX файл
+        # Отправляем работу частями (Telegram ограничение 4096 символов)
         work_names = {
-            'coursework': 'курсовая',
-            'essay': 'реферат', 
-            'thesis': 'диплом'
+            'coursework': 'Курсовая работа',
+            'essay': 'Реферат', 
+            'thesis': 'Дипломная работа'
         }
-        filename = f"{work_names[session['work_type']]}_{session['topic'][:20]}.docx"
-        docx_path = self.docx_generator.create_document(
-            work_type=session['work_type'],
-            topic=session['topic'],
-            subject=session['subject'],
-            content=full_content,
-            filename=filename
+        
+        # Отправляем заголовок
+        await query.message.reply_text(
+            f"🎉 <b>{work_names[session['work_type']]} ГОТОВА!</b>\n\n"
+            f"📚 Тема: {session['topic']}\n"
+            f"🔬 Предмет: {session['subject']}\n"
+            f"📄 Объем: ~{len(full_content.split())} слов\n\n"
+            f"<i>Работа разделена на несколько сообщений...</i>",
+            parse_mode='HTML'
         )
         
-        if docx_path:
-            # Отправляем файл пользователю
-            with open(docx_path, 'rb') as docx_file:
-                await query.message.reply_document(
-                    document=docx_file,
-                    filename=filename,
-                    caption=f"🎉 <b>Ваша работа готова!</b>\n\n"
-                           f"📚 Тип: {work_names[session['work_type']]}\n"
-                           f"📝 Тема: {session['topic']}\n"
-                           f"🔬 Предмет: {session['subject']}\n\n"
-                           f"Файл готов к сдаче!",
-                    parse_mode='HTML'
-                )
-            await generating_msg.delete()
-        else:
-            # Если не удалось создать DOCX, отправляем текстом
-            await generating_msg.edit_text(
-                f"🎉 <b>Работа готова!</b>\n\n"
-                f"{full_content[:1000]}...\n\n"
-                f"<i>Полный текст сохранен в базе данных</i>",
-                parse_mode='HTML'
-            )
+        # Отправляем работу частями
+        chunk_size = 3500
+        for i in range(0, len(full_content), chunk_size):
+            chunk = full_content[i:i + chunk_size]
+            await query.message.reply_text(chunk)
+            
+            # Небольшая задержка между сообщениями
+            await asyncio.sleep(1)
+        
+        await generating_msg.delete()
+        
+        # Предлагаем скачать или перегенерировать
+        keyboard = [
+            [InlineKeyboardButton("💾 Сохранить в файл", callback_data="save_to_file")],
+            [InlineKeyboardButton("🔄 Переписать работу", callback_data="rewrite_work")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.message.reply_text(
+            "✅ <b>Работа завершена!</b>\n\n"
+            "Вы можете сохранить работу в файл или переписать её.",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    async def generate_by_parts(self, query, session):
+        """Генерирует работу по частям"""
+        await query.message.reply_text(
+            "⏳ Функция поэтапной генерации в разработке...\n"
+            "Пока что используйте генерацию полной работы."
+        )
     
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {context.error}")
@@ -728,18 +779,26 @@ class CourseworkBot:
             logger.error("❌ BOT_TOKEN не найден!")
             return
         
+        if not DEEPSEEK_API_KEY:
+            logger.warning("⚠️ DEEPSEEK_API_KEY не найден! Бот будет работать с ограничениями.")
+        
         application = Application.builder().token(BOT_TOKEN).build()
         
         # Обработчики
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CallbackQueryHandler(self.handle_button, pattern="^(work_|upload_methodic)"))
         application.add_handler(CallbackQueryHandler(self.handle_methodic_selection, pattern="^(methodic_|no_methodic)"))
-        application.add_handler(CallbackQueryHandler(self.handle_generation_requests, pattern="^(generate_full|regenerate_structure)"))
+        application.add_handler(CallbackQueryHandler(self.handle_generation_requests, pattern="^(generate_full|generate_parts|regenerate_structure)"))
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
         application.add_error_handler(self.error_handler)
         
         logger.info("🤖 Бот-писатель запущен!")
+        print("=" * 50)
+        print("🎓 Academic Auto-Writer Bot Started!")
+        print("📚 Автоматическое написание курсовых, рефератов и дипломов")
+        print("=" * 50)
+        
         application.run_polling()
 
 if __name__ == "__main__":
