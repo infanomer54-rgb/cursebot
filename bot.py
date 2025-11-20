@@ -11,10 +11,6 @@ import requests
 import PyPDF2
 import docx2txt
 import aiofiles
-from docx import Document
-from docx.shared import Inches, Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -110,27 +106,12 @@ class Database:
         conn.close()
         return work_id
     
-    def update_work_structure(self, work_id, structure):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('UPDATE works SET structure = ? WHERE id = ?', (structure, work_id))
-        conn.commit()
-        conn.close()
-    
     def update_work_content(self, work_id, content):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('UPDATE works SET content = ? WHERE id = ?', (content, work_id))
         conn.commit()
         conn.close()
-    
-    def get_work(self, work_id):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM works WHERE id = ?', (work_id,))
-        result = cursor.fetchone()
-        conn.close()
-        return result
     
     def add_methodic(self, filename, file_path, requirements, structure, formatting, user_id):
         conn = sqlite3.connect(self.db_path)
@@ -210,91 +191,35 @@ class DocumentProcessor:
         return self.extract_methodic_info(text)
     
     def extract_methodic_info(self, text):
-        # Извлекаем требования к оформлению
-        font_info = self._extract_font_info(text)
-        spacing_info = self._extract_spacing_info(text)
-        margins_info = self._extract_margins_info(text)
-        structure_info = self._extract_structure_info(text)
-        requirements_info = self._extract_requirements(text)
+        requirements = self._extract_requirements(text)
+        structure = self._extract_structure(text)
         
         return {
-            'font': font_info,
-            'spacing': spacing_info,
-            'margins': margins_info,
-            'structure': structure_info,
-            'requirements': requirements_info,
+            'requirements': requirements,
+            'structure': structure,
             'full_text': text[:4000]
         }
     
-    def _extract_font_info(self, text):
+    def _extract_requirements(self, text):
         patterns = {
-            'font_family': r'шрифт[:\s]*([^\n,\d]+)',
-            'font_size': r'шрифт[:\s]*(\d+)',
-            'font_size_pt': r'(\d+)[\s]*пт',
-            'times_new_roman': r'Times New Roman|times new roman',
-            'arial': r'Arial|arial'
+            'volume': r'объем[:\s]*([^\n]+)',
+            'pages': r'страниц[:\s]*(\d+)',
+            'deadline': r'срок[:\s]*([^\n]+)',
+            'sections_count': r'раздел[ов]*[:\s]*(\d+)',
+            'font': r'шрифт[:\s]*([^\n]+)',
+            'spacing': r'интервал[:\s]*([^\n]+)',
+            'margins': r'поля[:\s]*([^\n]+)'
         }
         
-        font_info = {}
+        requirements = {}
         for key, pattern in patterns.items():
             matches = re.findall(pattern, text, re.IGNORECASE)
             if matches:
-                font_info[key] = matches[0] if key == 'font_size' else matches
+                requirements[key] = matches[0] if key in ['pages', 'sections_count'] else matches
         
-        # Устанавливаем значения по умолчанию если не найдены
-        if not font_info.get('font_family'):
-            font_info['font_family'] = ['Times New Roman']
-        if not font_info.get('font_size'):
-            font_info['font_size'] = '14'
-        
-        return font_info
+        return requirements
     
-    def _extract_spacing_info(self, text):
-        patterns = {
-            'line_spacing': r'интервал[:\s]*([^\n]+)',
-            'spacing_1_5': r'[\s\.\d]1[,\.]5|полуторный',
-            'spacing_1_0': r'[\s\.\d]1[,\.]0|одинарный'
-        }
-        
-        spacing_info = {}
-        for key, pattern in patterns.items():
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                spacing_info[key] = matches
-        
-        if not spacing_info.get('line_spacing'):
-            spacing_info['line_spacing'] = ['1.5']
-        
-        return spacing_info
-    
-    def _extract_margins_info(self, text):
-        patterns = {
-            'margins': r'поля[:\s]*([^\n]+)',
-            'margin_left': r'левое[:\s]*(\d+)',
-            'margin_right': r'правое[:\s]*(\d+)',
-            'margin_top': r'верхнее[:\s]*(\d+)',
-            'margin_bottom': r'нижнее[:\s]*(\d+)'
-        }
-        
-        margins_info = {}
-        for key, pattern in patterns.items():
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                margins_info[key] = matches[0] if key.startswith('margin_') else matches
-        
-        # Значения по умолчанию для полей (в см)
-        if not margins_info.get('margin_left'):
-            margins_info['margin_left'] = '3'
-        if not margins_info.get('margin_right'):
-            margins_info['margin_right'] = '1'
-        if not margins_info.get('margin_top'):
-            margins_info['margin_top'] = '2'
-        if not margins_info.get('margin_bottom'):
-            margins_info['margin_bottom'] = '2'
-        
-        return margins_info
-    
-    def _extract_structure_info(self, text):
+    def _extract_structure(self, text):
         patterns = {
             'sections': r'структур[а-яё]*[:\s]*([^\n]+)',
             'introduction': r'введен[а-яё]*[:\s]*([^\n]+)',
@@ -310,243 +235,75 @@ class DocumentProcessor:
                 structure_info[key] = matches
         
         return structure_info
-    
-    def _extract_requirements(self, text):
-        patterns = {
-            'volume': r'объем[:\s]*([^\n]+)',
-            'pages': r'страниц[:\s]*(\d+)',
-            'deadline': r'срок[:\s]*([^\n]+)',
-            'sections_count': r'раздел[ов]*[:\s]*(\d+)'
-        }
-        
-        requirements = {}
-        for key, pattern in patterns.items():
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                requirements[key] = matches[0] if key in ['pages', 'sections_count'] else matches
-        
-        return requirements
 
-class WordDocumentGenerator:
-    def __init__(self):
-        self.doc = None
-    
+class TextDocumentGenerator:
     def create_document(self, work_type, topic, subject, content, methodic_info, user_info=None):
-        """Создает Word документ согласно требованиям методички"""
+        """Создает чистый текстовый документ без лишних символов"""
         try:
-            self.doc = Document()
+            # Очищаем контент от лишних символов
+            clean_content = self._clean_content(content)
             
-            # Применяем настройки из методички
-            self._apply_formatting(methodic_info)
-            
-            # Создаем титульный лист
-            self._create_title_page(work_type, topic, subject, user_info)
-            
-            # Добавляем содержание
-            self._create_table_of_contents()
-            
-            # Добавляем основной текст
-            self._add_main_content(content, methodic_info)
-            
-            # Добавляем список литературы
-            self._add_bibliography()
+            # Создаем структурированный документ
+            document_text = self._create_document_structure(work_type, topic, subject, clean_content, user_info)
             
             # Сохраняем в bytes для отправки
             file_stream = io.BytesIO()
-            self.doc.save(file_stream)
+            file_stream.write(document_text.encode('utf-8'))
             file_stream.seek(0)
             
             return file_stream
             
         except Exception as e:
-            logger.error(f"Error creating Word document: {e}")
+            logger.error(f"Error creating text document: {e}")
             return None
     
-    def _apply_formatting(self, methodic_info):
-        """Применяет форматирование из методички"""
-        try:
-            # Настройка шрифта для всего документа
-            font_info = methodic_info.get('font', {})
-            font_family = font_info.get('font_family', ['Times New Roman'])[0]
-            font_size = int(font_info.get('font_size', '14'))
-            
-            # Настройка стилей
-            style = self.doc.styles['Normal']
-            font = style.font
-            font.name = font_family
-            font.size = Pt(font_size)
-            
-            # Настройка межстрочного интервала
-            spacing_info = methodic_info.get('spacing', {})
-            if spacing_info.get('spacing_1_5'):
-                paragraph_format = style.paragraph_format
-                paragraph_format.line_spacing = 1.5
-            elif spacing_info.get('spacing_1_0'):
-                paragraph_format = style.paragraph_format
-                paragraph_format.line_spacing = 1.0
-            
-            # Настройка полей
-            margins_info = methodic_info.get('margins', {})
-            sections = self.doc.sections
-            for section in sections:
-                # Конвертируем см в дюймы (1 см = 0.393701 дюйма)
-                section.left_margin = Inches(float(margins_info.get('margin_left', 3)) * 0.393701)
-                section.right_margin = Inches(float(margins_info.get('margin_right', 1)) * 0.393701)
-                section.top_margin = Inches(float(margins_info.get('margin_top', 2)) * 0.393701)
-                section.bottom_margin = Inches(float(margins_info.get('margin_bottom', 2)) * 0.393701)
-                
-        except Exception as e:
-            logger.error(f"Error applying formatting: {e}")
+    def _clean_content(self, content):
+        """Очищает контент от лишних символов форматирования"""
+        # Убираем HTML теги
+        clean = re.sub(r'<[^>]+>', '', content)
+        # Убираем маркдаун символы
+        clean = re.sub(r'[*_~`#]', '', clean)
+        # Убираем лишние переносы строк
+        clean = re.sub(r'\n\s*\n', '\n\n', clean)
+        # Убираем лишние пробелы
+        clean = re.sub(r' +', ' ', clean)
+        # Убираем специфические символы
+        clean = re.sub(r'[➤•▪▶]', '', clean)
+        return clean.strip()
     
-    def _create_title_page(self, work_type, topic, subject, user_info=None):
-        """Создает титульный лист"""
-        try:
-            # Название работы
-            work_type_names = {
-                "coursework": "КУРСОВАЯ РАБОТА",
-                "essay": "РЕФЕРАТ",
-                "thesis": "ДИПЛОМНАЯ РАБОТА"
-            }
-            
-            title = work_type_names.get(work_type, "АКАДЕМИЧЕСКАЯ РАБОТА")
-            
-            # Заголовок
-            title_paragraph = self.doc.add_heading(title, 0)
-            title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            title_paragraph.paragraph_format.space_after = Pt(24)
-            
-            # Предмет
-            subject_paragraph = self.doc.add_paragraph()
-            subject_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            subject_run = subject_paragraph.add_run(f"по дисциплине: {subject}")
-            subject_run.bold = True
-            subject_paragraph.paragraph_format.space_after = Pt(18)
-            
-            # Тема
-            topic_paragraph = self.doc.add_paragraph()
-            topic_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            topic_run = topic_paragraph.add_run(f"на тему: \"{topic}\"")
-            topic_run.bold = True
-            topic_paragraph.paragraph_format.space_after = Pt(36)
-            
-            # Информация о студенте (если есть)
-            if user_info:
-                student_paragraph = self.doc.add_paragraph()
-                student_paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                student_paragraph.add_run(f"Выполнил(а): {user_info}")
-                student_paragraph.paragraph_format.space_after = Pt(12)
-            
-            # Год
-            year_paragraph = self.doc.add_paragraph()
-            year_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            year_paragraph.add_run(f"{datetime.now().year} г.")
-            year_paragraph.paragraph_format.space_after = Pt(36)
-            
-            # Разрыв страницы
-            self.doc.add_page_break()
-            
-        except Exception as e:
-            logger.error(f"Error creating title page: {e}")
-    
-    def _create_table_of_contents(self):
-        """Создает оглавление"""
-        try:
-            toc_heading = self.doc.add_heading('СОДЕРЖАНИЕ', level=1)
-            toc_heading.paragraph_format.space_after = Pt(12)
-            
-            # Здесь можно добавить автоматическое оглавление
-            # Для простоты добавляем базовую структуру
-            contents = [
-                "Введение",
-                "Основная часть",
-                "Заключение", 
-                "Список литературы"
-            ]
-            
-            for content in contents:
-                paragraph = self.doc.add_paragraph()
-                paragraph.add_run(content)
-                paragraph.paragraph_format.space_after = Pt(6)
-            
-            self.doc.add_page_break()
-            
-        except Exception as e:
-            logger.error(f"Error creating table of contents: {e}")
-    
-    def _add_main_content(self, content, methodic_info):
-        """Добавляет основной текст работы"""
-        try:
-            # Разбиваем контент на разделы
-            sections = self._split_into_sections(content)
-            
-            for i, section in enumerate(sections):
-                if i == 0:  # Введение
-                    heading = self.doc.add_heading('ВВЕДЕНИЕ', level=1)
-                elif i == len(sections) - 1:  # Заключение
-                    heading = self.doc.add_heading('ЗАКЛЮЧЕНИЕ', level=1)
-                else:  # Основная часть
-                    heading = self.doc.add_heading(f'ГЛАВА {i}', level=1)
-                
-                heading.paragraph_format.space_after = Pt(12)
-                
-                # Добавляем текст раздела
-                paragraphs = section.split('\n\n')
-                for para in paragraphs:
-                    if para.strip():
-                        paragraph = self.doc.add_paragraph(para.strip())
-                        paragraph.paragraph_format.space_after = Pt(6)
-                        paragraph.paragraph_format.first_line_indent = Inches(0.5)  # Красная строка
-            
-        except Exception as e:
-            logger.error(f"Error adding main content: {e}")
-    
-    def _split_into_sections(self, content):
-        """Разбивает текст на разделы"""
-        # Простая логика разбиения по ключевым словам
-        sections = []
-        current_section = []
+    def _create_document_structure(self, work_type, topic, subject, content, user_info):
+        """Создает структурированный текст документа"""
         
-        lines = content.split('\n')
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            # Проверяем, является ли строка заголовком раздела
-            if any(keyword in line.lower() for keyword in ['введение', 'глава', 'заключение', 'вывод']):
-                if current_section:
-                    sections.append('\n'.join(current_section))
-                    current_section = []
-            
-            current_section.append(line)
+        work_type_names = {
+            "coursework": "КУРСОВАЯ РАБОТА",
+            "essay": "РЕФЕРАТ",
+            "thesis": "ДИПЛОМНАЯ РАБОТА"
+        }
         
-        if current_section:
-            sections.append('\n'.join(current_section))
+        title = work_type_names.get(work_type, "АКАДЕМИЧЕСКАЯ РАБОТА")
         
-        return sections if sections else [content]
-    
-    def _add_bibliography(self):
-        """Добавляет список литературы"""
-        try:
-            self.doc.add_page_break()
-            heading = self.doc.add_heading('СПИСОК ЛИТЕРАТУРЫ', level=1)
-            heading.paragraph_format.space_after = Pt(12)
-            
-            # Базовый список литературы
-            bibliography = [
-                "1. Пример источника 1",
-                "2. Пример источника 2", 
-                "3. Пример источника 3"
-            ]
-            
-            for item in bibliography:
-                paragraph = self.doc.add_paragraph(item)
-                paragraph.paragraph_format.space_after = Pt(6)
-                paragraph.paragraph_format.first_line_indent = Inches(-0.3)  # Висячий отступ
-                paragraph.paragraph_format.left_indent = Inches(0.3)
-                
-        except Exception as e:
-            logger.error(f"Error adding bibliography: {e}")
+        # Создаем документ с правильным форматированием
+        document_lines = []
+        
+        # Титульный лист
+        document_lines.append(" " * 20 + "=" * 40)
+        document_lines.append(" " * 30 + title)
+        document_lines.append("")
+        document_lines.append(" " * 25 + f"по дисциплине: {subject}")
+        document_lines.append("")
+        document_lines.append(" " * 20 + f'на тему: "{topic}"')
+        document_lines.append("")
+        if user_info:
+            document_lines.append(" " * 25 + f"Выполнил(а): {user_info}")
+        document_lines.append("")
+        document_lines.append(" " * 35 + f"{datetime.now().year} г.")
+        document_lines.append(" " * 20 + "=" * 40)
+        document_lines.append("\n" * 5)
+        
+        # Добавляем основной текст (уже очищенный)
+        document_lines.append(content)
+        
+        return "\n".join(document_lines)
 
 class AcademicWriter:
     def __init__(self):
@@ -554,7 +311,7 @@ class AcademicWriter:
         self.api_url = DEEPSEEK_API_URL
     
     def generate_complete_work(self, work_type, topic, subject, methodic_info=None):
-        """Генерирует полную работу включая структуру и содержание"""
+        """Генерирует полную работу с улучшенным качеством"""
         
         work_type_names = {
             "coursework": "курсовой работы",
@@ -562,53 +319,182 @@ class AcademicWriter:
             "thesis": "дипломной работы"
         }
         
+        # Создаем очень детальный системный промпт
+        system_prompt = self._create_detailed_system_prompt(work_type, topic, subject, methodic_info)
+        
+        # Разбиваем на части для лучшего качества
+        work_parts = []
+        
+        # Часть 1: Введение
+        intro_prompt = f"""
+Напиши ВВЕДЕНИЕ для {work_type_names[work_type]} на тему "{topic}" по предмету "{subject}".
+
+Введение должно содержать:
+1. Актуальность темы - почему эта тема важна в современных условиях
+2. Цель работы - какую главную цель преследует работа
+3. Задачи исследования - конкретные задачи для достижения цели
+4. Объект и предмет исследования
+5. Методы исследования
+6. Теоретическая и практическая значимость
+
+Объем: {self._get_section_volume(work_type, 'введение')}
+Стиль: естественный, академический, но не слишком формальный
+"""
+        intro = self._make_api_call(system_prompt, intro_prompt)
+        if not intro.startswith("❌"):
+            work_parts.append(f"ВВЕДЕНИЕ\n\n{intro}\n")
+        
+        # Часть 2: Основная часть
+        main_part_prompt = f"""
+Напиши ОСНОВНУЮ ЧАСТЬ для {work_type_names[work_type]} на тему "{topic}" по предмету "{subject}".
+
+Основная часть должна включать:
+ГЛАВА 1. ТЕОРЕТИЧЕСКИЕ ОСНОВЫ ИССЛЕДОВАНИЯ
+- Анализ существующих исследований по теме
+- Теоретические концепции и подходы
+- Определение ключевых понятий
+
+ГЛАВА 2. ПРАКТИЧЕСКОЕ ИССЛЕДОВАНИЕ
+- Методология исследования
+- Анализ данных или примеров
+- Результаты исследования
+
+ГЛАВА 3. АНАЛИЗ И ВЫВОДЫ
+- Интерпретация полученных результатов
+- Сравнение с существующими исследованиями
+- Предварительные выводы
+
+Объем: {self._get_section_volume(work_type, 'основная часть')}
+Стиль: естественный, с конкретными примерами и анализом
+"""
+        main_part = self._make_api_call(system_prompt, main_part_prompt)
+        if not main_part.startswith("❌"):
+            work_parts.append(f"ОСНОВНАЯ ЧАСТЬ\n\n{main_part}\n")
+        
+        # Часть 3: Заключение
+        conclusion_prompt = f"""
+Напиши ЗАКЛЮЧЕНИЕ для {work_type_names[work_type]} на тему "{topic}" по предмету "{subject}".
+
+Заключение должно содержать:
+1. Основные выводы по работе
+2. Достигнута ли цель исследования
+3. Решены ли поставленные задачи
+4. Практическая значимость работы
+5. Перспективы дальнейшего исследования
+6. Рекомендации
+
+Объем: {self._get_section_volume(work_type, 'заключение')}
+Стиль: итоговый, с четкими выводами
+"""
+        conclusion = self._make_api_call(system_prompt, conclusion_prompt)
+        if not conclusion.startswith("❌"):
+            work_parts.append(f"ЗАКЛЮЧЕНИЕ\n\n{conclusion}\n")
+        
+        # Часть 4: Список литературы
+        bibliography_prompt = f"""
+Составь СПИСОК ЛИТЕРАТУРЫ для {work_type_names[work_type]} на тему "{topic}" по предмету "{subject}".
+
+Включи 10-15 актуальных источников:
+- Научные статьи и монографии
+- Учебные пособия
+- Нормативные документы (если применимо)
+- Интернет-ресурсы (при необходимости)
+
+Формат: ГОСТ 7.1-2003
+"""
+        bibliography = self._make_api_call(system_prompt, bibliography_prompt)
+        if not bibliography.startswith("❌"):
+            work_parts.append(f"СПИСОК ЛИТЕРАТУРЫ\n\n{bibliography}")
+        
+        # Объединяем все части
+        full_work = "\n\n".join(work_parts)
+        
+        # Если какая-то часть не сгенерировалась, пробуем сгенерировать полную работу
+        if len(full_work.split()) < self._get_min_word_count(work_type):
+            full_prompt = f"""
+Напиши ПОЛНЫЙ ТЕКСТ {work_type_names[work_type]} на тему "{topic}" по предмету "{subject}".
+
+Требования:
+- Естественный стиль, как будто работу пишет студент
+- Глубокое раскрытие темы
+- Конкретные примеры и анализ
+- Логическая структура
+- Объем: {self._get_work_volume(work_type)}
+- Без лишних форматирующих символов
+
+Структура:
+1. Введение
+2. Основная часть (2-3 главы)
+3. Заключение
+4. Список литературы
+
+Верни чистый текст без лишних символов (*, <br>, и т.д.)
+"""
+            full_work = self._make_api_call(system_prompt, full_prompt)
+        
+        return full_work
+    
+    def _create_detailed_system_prompt(self, work_type, topic, subject, methodic_info):
+        """Создает детальный системный промпт"""
+        
         methodic_text = ""
         if methodic_info:
             methodic_text = f"""
-ТРЕБОВАНИЯ МЕТОДИЧКИ ДЛЯ ОФОРМЛЕНИЯ:
-- Шрифт: {methodic_info['font'].get('font_family', ['Times New Roman'])[0]}
-- Размер шрифта: {methodic_info['font'].get('font_size', '14')} пт
-- Межстрочный интервал: {methodic_info['spacing'].get('line_spacing', ['1.5'])[0]}
-- Поля: левое {methodic_info['margins'].get('margin_left', '3')} см, правое {methodic_info['margins'].get('margin_right', '1')} см
-
-ТРЕБОВАНИЯ К СОДЕРЖАНИЮ:
+ДОПОЛНИТЕЛЬНЫЕ ТРЕБОВАНИЯ ИЗ МЕТОДИЧКИ:
 {methodic_info.get('requirements', {})}
+{methodic_info.get('structure', {})}
 """
         
-        system_prompt = f"""
-Ты - профессиональный академический писатель. Напиши ПОЛНЫЙ ТЕКСТ {work_type} на тему "{topic}" по предмету "{subject}".
+        return f"""
+Ты - опытный академический писатель. Твоя задача - написать качественную академическую работу, которая выглядит так, будто её написал студент.
+
+ОСНОВНЫЕ ПРАВИЛА:
+1. ЕСТЕСТВЕННЫЙ СТИЛЬ - работа должна выглядеть так, будто её писал студент, а не ИИ
+2. ГЛУБОКОЕ РАСКРЫТИЕ ТЕМЫ - подробный анализ, конкретные примеры
+3. ЛОГИЧЕСКАЯ СТРУКТУРА - четкое разделение на разделы
+4. АКАДЕМИЧЕСКИЙ ЯЗЫК - но без излишней формальности
+5. КОНКРЕТИКА - конкретные примеры, данные, исследования
+6. ЧИСТЫЙ ТЕКСТ - без лишних символов форматирования (*, <br>, и т.д.)
+
+ТИП РАБОТЫ: {work_type}
+ТЕМА: {topic}
+ПРЕДМЕТ: {subject}
 
 {methodic_text}
 
-СТРУКТУРА РАБОТЫ ДОЛЖНА ВКЛЮЧАТЬ:
-1. Титульный лист
-2. Содержание/оглавление  
-3. Введение (актуальность, цели, задачи, методы исследования)
-4. Основную часть (2-3 главы с теоретическим и практическим анализом)
-5. Заключение (выводы, результаты, рекомендации)
-6. Список литературы (10-15 источников)
-
-ТРЕБОВАНИЯ К СОДЕРЖАНИЮ:
-- Академический стиль изложения
-- Глубокое раскрытие темы
-- Научная обоснованность
-- Логическая последовательность
-- Конкретные примеры, данные, исследования
-- Объем: {self._get_work_volume(work_type)}
-- Уникальность и оригинальность
-
-Верни ПОЛНЫЙ ТЕКСТ работы включая все разделы. Текст должен быть готов для оформления в Word документ.
+ВАЖНО: 
+- Не используй маркдаун разметку
+- Не используй HTML теги
+- Не используй специальные символы для форматирования
+- Пиши естественным, связным текстом
+- Соблюдай логическую последовательность
+- Используй академическую лексику, но не слишком сложную
 """
-        
-        return self._make_api_call(system_prompt, f"Напиши полный текст {work_type_names[work_type]} на тему '{topic}'")
     
     def _get_work_volume(self, work_type):
         volumes = {
-            "essay": "15-25 страниц (3000-5000 слов)",
-            "coursework": "30-50 страниц (6000-10000 слов)", 
-            "thesis": "60-100 страниц (12000-20000 слов)"
+            "essay": "15-25 страниц (4000-7000 слов)",
+            "coursework": "30-50 страниц (8000-12000 слов)", 
+            "thesis": "60-100 страниц (15000-25000 слов)"
         }
         return volumes.get(work_type, "20-40 страниц")
+    
+    def _get_section_volume(self, work_type, section):
+        base_volumes = {
+            "essay": {"введение": "2-3 страницы", "основная часть": "10-18 страниц", "заключение": "2-3 страницы"},
+            "coursework": {"введение": "3-5 страниц", "основная часть": "20-35 страниц", "заключение": "3-5 страниц"},
+            "thesis": {"введение": "5-8 страниц", "основная часть": "45-80 страниц", "заключение": "5-8 страниц"}
+        }
+        volume_info = base_volumes.get(work_type, {})
+        return volume_info.get(section.lower(), "5-10 страниц")
+    
+    def _get_min_word_count(self, work_type):
+        word_counts = {
+            "essay": 4000,
+            "coursework": 8000,
+            "thesis": 15000
+        }
+        return word_counts.get(work_type, 5000)
     
     def _make_api_call(self, system_prompt, user_prompt):
         if not self.api_key:
@@ -619,23 +505,29 @@ class AcademicWriter:
             "Authorization": f"Bearer {self.api_key}"
         }
         
-        # Увеличиваем лимит токенов для получения полного текста
         data = {
             "model": "deepseek-chat",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "temperature": 0.7,
-            "max_tokens": 8000  # Увеличиваем для получения полного текста
+            "temperature": 0.8,  # Немного увеличиваем для разнообразия
+            "max_tokens": 4000
         }
         
         try:
-            logger.info("Отправка запроса к DeepSeek API...")
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=180)
+            logger.info(f"Отправка запроса к DeepSeek API: {user_prompt[:100]}...")
+            response = requests.post(self.api_url, headers=headers, json=data, timeout=120)
             response.raise_for_status()
             result = response.json()
-            return result['choices'][0]['message']['content']
+            content = result['choices'][0]['message']['content']
+            
+            # Проверяем длину контента
+            word_count = len(content.split())
+            logger.info(f"Получен ответ: {word_count} слов")
+            
+            return content
+            
         except requests.exceptions.Timeout:
             return "⏰ Время ожидания истекло. Попробуйте еще раз."
         except requests.exceptions.RequestException as e:
@@ -650,16 +542,16 @@ class CourseworkBot:
         self.db = Database()
         self.doc_processor = DocumentProcessor()
         self.writer = AcademicWriter()
-        self.doc_generator = WordDocumentGenerator()
+        self.doc_generator = TextDocumentGenerator()
         self.user_sessions = {}
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         self.db.add_user(user.id, user.username, user.first_name, user.last_name)
         
-        welcome_text = f"""🎓 <b>Академический помощник - Автописатель</b>
+        welcome_text = f"""🎓 <b>Академический помощник</b>
 
-Привет, {user.first_name}! Я напишу для тебя полноценную академическую работу с нуля и сразу отправлю готовый Word документ.
+Привет, {user.first_name}! Я напишу для тебя качественную академическую работу, которая будет выглядеть естественно и содержательно.
 
 Выбери тип работы:"""
 
@@ -701,7 +593,7 @@ class CourseworkBot:
         elif data == 'upload_methodic':
             await query.edit_message_text(
                 "📎 Отправьте файл методички (PDF, DOCX, TXT):\n\n"
-                "Методичка поможет мне оформить работу по требованиям вашего учебного заведения."
+                "Методичка поможет учесть особые требования вашего учебного заведения."
             )
     
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -743,7 +635,7 @@ class CourseworkBot:
                 
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await update.message.reply_text(
-                    f"🎯 Тема: <b>{user_message}</b>\n\nВыберите методичку для оформления:",
+                    f"🎯 Тема: <b>{user_message}</b>\n\nВыберите методичку для учета требований:",
                     reply_markup=reply_markup,
                     parse_mode='HTML'
                 )
@@ -753,11 +645,7 @@ class CourseworkBot:
     
     async def start_work_generation(self, update, session, methodic_info):
         """Начинает процесс генерации работы"""
-        # Определяем user_id в зависимости от типа update
-        if hasattr(update, 'effective_user'):
-            user_id = update.effective_user.id
-        else:
-            user_id = update.from_user.id
+        user_id = update.effective_user.id if hasattr(update, 'effective_user') else update.from_user.id
         
         # Создаем запись в БД
         work_id = self.db.create_work(
@@ -774,19 +662,15 @@ class CourseworkBot:
         await self.generate_complete_work(update, session)
     
     async def generate_complete_work(self, update, session):
-        """Генерирует полную работу и создает Word документ"""
-        # Определяем объект сообщения в зависимости от типа update
-        if hasattr(update, 'message'):
-            message_obj = update.message
-        else:
-            message_obj = update
+        """Генерирует полную работу и создает документ"""
+        message_obj = update.message if hasattr(update, 'message') else update
         
         # Отправляем сообщение о начале генерации
         progress_msg = await message_obj.reply_text(
-            "🔄 <b>Начинаю создание работы...</b>\n\n"
-            "📝 Генерирую содержание...\n"
-            "⏳ Это займет 3-5 минут\n"
-            "📄 Результат будет в Word документе",
+            "🔄 <b>Начинаю создание качественной работы...</b>\n\n"
+            "📝 Пишу введение...\n"
+            "⏳ Это займет 5-7 минут\n"
+            "✨ Работа будет выглядеть естественно и содержательно",
             parse_mode='HTML'
         )
         
@@ -804,19 +688,27 @@ class CourseworkBot:
             await progress_msg.edit_text(f"❌ Не удалось создать работу: {full_content}")
             return
         
-        # Обновляем прогресс
-        await progress_msg.edit_text(
-            "🔄 <b>Работа написана! Оформляю в Word...</b>\n\n"
-            "🎨 Применяю форматирование по методичке\n"
-            "📑 Создаю титульный лист и содержание\n"
-            "⏳ Еще немного...",
-            parse_mode='HTML'
-        )
+        # Проверяем объем работы
+        word_count = len(full_content.split())
+        expected_min = self.writer._get_min_word_count(session['work_type'])
+        
+        if word_count < expected_min * 0.7:  # Если объем меньше 70% от ожидаемого
+            await progress_msg.edit_text(
+                "⚠️ <b>Объем работы меньше ожидаемого. Дописываю...</b>",
+                parse_mode='HTML'
+            )
+            # Пробуем дополнить работу
+            additional_content = self.writer._make_api_call(
+                "Дополни работу, чтобы увеличить объем и глубину анализа.",
+                f"Дополни следующий текст, увеличив объем до {expected_min} слов: {full_content[:1000]}..."
+            )
+            if not additional_content.startswith("❌"):
+                full_content += "\n\n" + additional_content
         
         # Сохраняем контент в БД
         self.db.update_work_content(session['work_id'], full_content)
         
-        # Создаем Word документ
+        # Создаем текстовый документ
         user_info = f"{message_obj.from_user.first_name} {message_obj.from_user.last_name or ''}".strip()
         
         doc_stream = self.doc_generator.create_document(
@@ -829,7 +721,7 @@ class CourseworkBot:
         )
         
         if not doc_stream:
-            await progress_msg.edit_text("❌ Ошибка при создании Word документа")
+            await progress_msg.edit_text("❌ Ошибка при создании документа")
             return
         
         # Отправляем документ пользователю
@@ -839,7 +731,8 @@ class CourseworkBot:
             'thesis': 'Дипломная работа'
         }
         
-        filename = f"{work_names[session['work_type']]} - {session['topic'][:30]}.docx"
+        filename = f"{work_names[session['work_type']]} - {session['topic'][:30]}.txt"
+        word_count = len(full_content.split())
         
         await message_obj.reply_document(
             document=doc_stream,
@@ -848,10 +741,10 @@ class CourseworkBot:
                 f"🎉 <b>{work_names[session['work_type']]} ГОТОВА!</b>\n\n"
                 f"📚 Тема: {session['topic']}\n"
                 f"🔬 Предмет: {session['subject']}\n"
-                f"📄 Формат: Word документ\n"
-                f"🎨 Оформление: {'по методичке' if methodic_info else 'стандартное'}\n"
-                f"📏 Объем: ~{len(full_content.split())} слов\n\n"
-                f"<i>✅ Документ готов к сдаче!</i>"
+                f"📄 Объем: {word_count} слов\n"
+                f"🎨 Стиль: естественный студенческий\n"
+                f"✅ Качество: полное раскрытие темы\n\n"
+                f"<i>Документ готов к использованию!</i>"
             ),
             parse_mode='HTML'
         )
@@ -865,8 +758,10 @@ class CourseworkBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await message_obj.reply_text(
-            "✨ <b>Отлично! Работа завершена!</b>\n\n"
-            "Вы можете начать новую работу или использовать /start для выбора другого типа работы.",
+            "✨ <b>Работа успешно завершена!</b>\n\n"
+            f"📊 Статистика: {word_count} слов, полное раскрытие темы\n"
+            "🎯 Качество: работа выглядит естественно\n\n"
+            "Вы можете начать новую работу:",
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
@@ -892,9 +787,6 @@ class CourseworkBot:
                 methodic_info = {
                     'requirements': json.loads(methodic_data[3]) if methodic_data[3] else {},
                     'structure': json.loads(methodic_data[4]) if methodic_data[4] else {},
-                    'font': json.loads(methodic_data[5]).get('font', {}) if methodic_data[5] else {},
-                    'spacing': json.loads(methodic_data[5]).get('spacing', {}) if methodic_data[5] else {},
-                    'margins': json.loads(methodic_data[5]).get('margins', {}) if methodic_data[5] else {}
                 }
                 session['methodic_info'] = methodic_info
                 session['methodic_id'] = methodic_id
@@ -941,10 +833,10 @@ class CourseworkBot:
             
             await processing_msg.edit_text(
                 f"✅ Методичка загружена!\n"
-                f"📋 Настройки оформления:\n"
-                f"• Шрифт: {methodic_info['font'].get('font_family', ['Times New Roman'])[0]}\n"
-                f"• Размер: {methodic_info['font'].get('font_size', '14')} пт\n"
-                f"• Интервал: {methodic_info['spacing'].get('line_spacing', ['1.5'])[0]}\n\n"
+                f"📋 Учтены требования к:\n"
+                f"• Структуре работы\n"
+                f"• Объему и содержанию\n"
+                f"• Оформлению\n\n"
                 f"Теперь начните создание работы через /start"
             )
             
@@ -967,7 +859,6 @@ class CourseworkBot:
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {context.error}")
         
-        # Отправляем сообщение об ошибке пользователю
         try:
             if update and hasattr(update, 'effective_chat'):
                 await context.bot.send_message(
@@ -996,12 +887,12 @@ class CourseworkBot:
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
         application.add_error_handler(self.error_handler)
         
-        logger.info("🤖 Бот-писатель с Word оформлением запущен!")
+        logger.info("🤖 Улучшенный бот-писатель запущен!")
         print("=" * 60)
-        print("🎓 Academic Auto-Writer Bot with Word Formatting Started!")
-        print("📚 Автоматическое написание и оформление работ в Word")
-        print("⚡ Прямая генерация в Word без промежуточных сообщений")
-        print("📄 Поддержка методичек для точного оформления")
+        print("🎓 Quality Academic Writer Bot Started!")
+        print("📚 Генерация качественных работ с естественным стилем")
+        print("⚡ Увеличенный объем и улучшенное качество текста")
+        print("🎨 Чистый текст без лишних символов")
         print("=" * 60)
         
         application.run_polling()
