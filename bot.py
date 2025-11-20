@@ -553,8 +553,8 @@ class AcademicWriter:
         self.api_key = DEEPSEEK_API_KEY
         self.api_url = DEEPSEEK_API_URL
     
-    def generate_structure(self, work_type, topic, subject, methodic_info=None):
-        """Генерирует структуру работы"""
+    def generate_complete_work(self, work_type, topic, subject, methodic_info=None):
+        """Генерирует полную работу включая структуру и содержание"""
         
         work_type_names = {
             "coursework": "курсовой работы",
@@ -565,68 +565,48 @@ class AcademicWriter:
         methodic_text = ""
         if methodic_info:
             methodic_text = f"""
-УЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ:
-Требования: {methodic_info.get('requirements', {})}
-Структура: {methodic_info.get('structure', {})}
-Оформление: {methodic_info.get('formatting', 'стандартное')}
+ТРЕБОВАНИЯ МЕТОДИЧКИ ДЛЯ ОФОРМЛЕНИЯ:
+- Шрифт: {methodic_info['font'].get('font_family', ['Times New Roman'])[0]}
+- Размер шрифта: {methodic_info['font'].get('font_size', '14')} пт
+- Межстрочный интервал: {methodic_info['spacing'].get('line_spacing', ['1.5'])[0]}
+- Поля: левое {methodic_info['margins'].get('margin_left', '3')} см, правое {methodic_info['margins'].get('margin_right', '1')} см
+
+ТРЕБОВАНИЯ К СОДЕРЖАНИЮ:
+{methodic_info.get('requirements', {})}
 """
-        
-        system_prompt = f"""
-Ты - эксперт по созданию академических работ. Создай подробную структуру для {work_type_names[work_type]} на тему "{topic}" по предмету "{subject}".
-
-{methodic_text}
-
-Создай подробную структуру включая:
-1. Титульный лист
-2. Содержание/оглавление  
-3. Введение с актуальностью, целями, задачами
-4. Основную часть с главами и подразделами (2-3 главы)
-5. Заключение с выводами
-6. Список литературы
-
-Верни только чистую структуру без лишних комментариев.
-"""
-        
-        return self._make_api_call(system_prompt, "Создай подробную структуру академической работы.")
-    
-    def generate_full_work(self, work_type, topic, subject, structure, methodic_info=None):
-        """Генерирует полный текст работы"""
-        
-        methodic_text = ""
-        if methodic_info:
-            methodic_text = f"\nТРЕБОВАНИЯ МЕТОДИЧКИ: {methodic_info.get('requirements', {})}"
         
         system_prompt = f"""
 Ты - профессиональный академический писатель. Напиши ПОЛНЫЙ ТЕКСТ {work_type} на тему "{topic}" по предмету "{subject}".
 
-СТРУКТУРА РАБОТЫ:
-{structure}
 {methodic_text}
 
-Требования к содержанию:
+СТРУКТУРА РАБОТЫ ДОЛЖНА ВКЛЮЧАТЬ:
+1. Титульный лист
+2. Содержание/оглавление  
+3. Введение (актуальность, цели, задачи, методы исследования)
+4. Основную часть (2-3 главы с теоретическим и практическим анализом)
+5. Заключение (выводы, результаты, рекомендации)
+6. Список литературы (10-15 источников)
+
+ТРЕБОВАНИЯ К СОДЕРЖАНИЮ:
 - Академический стиль изложения
 - Глубокое раскрытие темы
 - Научная обоснованность
 - Логическая последовательность
-- Конкретные примеры и данные
+- Конкретные примеры, данные, исследования
 - Объем: {self._get_work_volume(work_type)}
+- Уникальность и оригинальность
 
-Обязательные разделы:
-1. Введение (актуальность, цели, задачи, методы)
-2. Основная часть (теоретический анализ и практическое исследование)
-3. Заключение (выводы и рекомендации)
-4. Список литературы
-
-Верни полный текст работы готовый к сдаче.
+Верни ПОЛНЫЙ ТЕКСТ работы включая все разделы. Текст должен быть готов для оформления в Word документ.
 """
         
-        return self._make_api_call(system_prompt, "Напиши полный текст академической работы.")
+        return self._make_api_call(system_prompt, f"Напиши полный текст {work_type_names[work_type]} на тему '{topic}'")
     
     def _get_work_volume(self, work_type):
         volumes = {
-            "essay": "15-25 страниц",
-            "coursework": "30-50 страниц", 
-            "thesis": "60-100 страниц"
+            "essay": "15-25 страниц (3000-5000 слов)",
+            "coursework": "30-50 страниц (6000-10000 слов)", 
+            "thesis": "60-100 страниц (12000-20000 слов)"
         }
         return volumes.get(work_type, "20-40 страниц")
     
@@ -639,6 +619,7 @@ class AcademicWriter:
             "Authorization": f"Bearer {self.api_key}"
         }
         
+        # Увеличиваем лимит токенов для получения полного текста
         data = {
             "model": "deepseek-chat",
             "messages": [
@@ -646,12 +627,12 @@ class AcademicWriter:
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": 0.7,
-            "max_tokens": 4000
+            "max_tokens": 8000  # Увеличиваем для получения полного текста
         }
         
         try:
             logger.info("Отправка запроса к DeepSeek API...")
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=120)
+            response = requests.post(self.api_url, headers=headers, json=data, timeout=180)
             response.raise_for_status()
             result = response.json()
             return result['choices'][0]['message']['content']
@@ -678,7 +659,7 @@ class CourseworkBot:
         
         welcome_text = f"""🎓 <b>Академический помощник - Автописатель</b>
 
-Привет, {user.first_name}! Я напишу для тебя полноценную академическую работу с нуля и оформлю её в Word по методичке.
+Привет, {user.first_name}! Я напишу для тебя полноценную академическую работу с нуля и сразу отправлю готовый Word документ.
 
 Выбери тип работы:"""
 
@@ -767,9 +748,10 @@ class CourseworkBot:
                     parse_mode='HTML'
                 )
             else:
-                await self.start_generation(update, session, None)
+                # Если нет методичек, сразу начинаем генерацию
+                await self.start_work_generation(update, session, None)
     
-    async def start_generation(self, update, session, methodic_info):
+    async def start_work_generation(self, update, session, methodic_info):
         """Начинает процесс генерации работы"""
         # Определяем user_id в зависимости от типа update
         if hasattr(update, 'effective_user'):
@@ -788,49 +770,103 @@ class CourseworkBot:
         session['work_id'] = work_id
         self.user_sessions[user_id] = session
         
-        # Начинаем генерацию структуры
-        await self.generate_structure(update, session)
+        # Сразу начинаем генерацию полной работы
+        await self.generate_complete_work(update, session)
     
-    async def generate_structure(self, update, session):
-        """Генерирует структуру работы"""
+    async def generate_complete_work(self, update, session):
+        """Генерирует полную работу и создает Word документ"""
         # Определяем объект сообщения в зависимости от типа update
         if hasattr(update, 'message'):
             message_obj = update.message
         else:
             message_obj = update
         
-        generating_msg = await message_obj.reply_text("🔄 Создаю структуру работы...")
+        # Отправляем сообщение о начале генерации
+        progress_msg = await message_obj.reply_text(
+            "🔄 <b>Начинаю создание работы...</b>\n\n"
+            "📝 Генерирую содержание...\n"
+            "⏳ Это займет 3-5 минут\n"
+            "📄 Результат будет в Word документе",
+            parse_mode='HTML'
+        )
         
-        methodic_info = session.get('methodic_info')
+        methodic_info = session.get('methodic_info', {})
         
-        structure = self.writer.generate_structure(
+        # Генерируем полную работу
+        full_content = self.writer.generate_complete_work(
             work_type=session['work_type'],
             topic=session['topic'],
             subject=session['subject'],
             methodic_info=methodic_info
         )
         
-        if structure.startswith("❌") or structure.startswith("⏰"):
-            await generating_msg.edit_text(f"❌ Не удалось создать структуру: {structure}")
+        if full_content.startswith("❌") or full_content.startswith("⏰"):
+            await progress_msg.edit_text(f"❌ Не удалось создать работу: {full_content}")
             return
         
-        # Сохраняем структуру
-        self.db.update_work_structure(session['work_id'], structure)
+        # Обновляем прогресс
+        await progress_msg.edit_text(
+            "🔄 <b>Работа написана! Оформляю в Word...</b>\n\n"
+            "🎨 Применяю форматирование по методичке\n"
+            "📑 Создаю титульный лист и содержание\n"
+            "⏳ Еще немного...",
+            parse_mode='HTML'
+        )
         
+        # Сохраняем контент в БД
+        self.db.update_work_content(session['work_id'], full_content)
+        
+        # Создаем Word документ
+        user_info = f"{message_obj.from_user.first_name} {message_obj.from_user.last_name or ''}".strip()
+        
+        doc_stream = self.doc_generator.create_document(
+            work_type=session['work_type'],
+            topic=session['topic'],
+            subject=session['subject'],
+            content=full_content,
+            methodic_info=methodic_info,
+            user_info=user_info
+        )
+        
+        if not doc_stream:
+            await progress_msg.edit_text("❌ Ошибка при создании Word документа")
+            return
+        
+        # Отправляем документ пользователю
+        work_names = {
+            'coursework': 'Курсовая работа',
+            'essay': 'Реферат', 
+            'thesis': 'Дипломная работа'
+        }
+        
+        filename = f"{work_names[session['work_type']]} - {session['topic'][:30]}.docx"
+        
+        await message_obj.reply_document(
+            document=doc_stream,
+            filename=filename,
+            caption=(
+                f"🎉 <b>{work_names[session['work_type']]} ГОТОВА!</b>\n\n"
+                f"📚 Тема: {session['topic']}\n"
+                f"🔬 Предмет: {session['subject']}\n"
+                f"📄 Формат: Word документ\n"
+                f"🎨 Оформление: {'по методичке' if methodic_info else 'стандартное'}\n"
+                f"📏 Объем: ~{len(full_content.split())} слов\n\n"
+                f"<i>✅ Документ готов к сдаче!</i>"
+            ),
+            parse_mode='HTML'
+        )
+        
+        await progress_msg.delete()
+        
+        # Предлагаем начать новую работу
         keyboard = [
-            [InlineKeyboardButton("✅ Написать работу в Word", callback_data="generate_full")],
-            [InlineKeyboardButton("🔄 Перегенерировать структуру", callback_data="regenerate_structure")]
+            [InlineKeyboardButton("🔄 Написать новую работу", callback_data="new_work")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Разбиваем длинное сообщение на части
-        structure_preview = structure[:1000] + "..." if len(structure) > 1000 else structure
-        
-        await generating_msg.edit_text(
-            f"📋 <b>Структура работы готова!</b>\n\n"
-            f"{structure_preview}\n\n"
-            f"<i>Работа будет оформлена в Word документ согласно выбранной методичке</i>\n\n"
-            f"Выберите действие:",
+        await message_obj.reply_text(
+            "✨ <b>Отлично! Работа завершена!</b>\n\n"
+            "Вы можете начать новую работу или использовать /start для выбора другого типа работы.",
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
@@ -848,7 +884,7 @@ class CourseworkBot:
         if data == 'no_methodic':
             session['methodic_info'] = None
             self.user_sessions[user_id] = session
-            await self.start_generation(query, session, None)
+            await self.start_work_generation(query, session, None)
         elif data.startswith('methodic_'):
             methodic_id = int(data.split('_')[1])
             methodic_data = self.db.get_methodic(methodic_id)
@@ -856,12 +892,14 @@ class CourseworkBot:
                 methodic_info = {
                     'requirements': json.loads(methodic_data[3]) if methodic_data[3] else {},
                     'structure': json.loads(methodic_data[4]) if methodic_data[4] else {},
-                    'formatting': json.loads(methodic_data[5]) if methodic_data[5] else {}
+                    'font': json.loads(methodic_data[5]).get('font', {}) if methodic_data[5] else {},
+                    'spacing': json.loads(methodic_data[5]).get('spacing', {}) if methodic_data[5] else {},
+                    'margins': json.loads(methodic_data[5]).get('margins', {}) if methodic_data[5] else {}
                 }
                 session['methodic_info'] = methodic_info
                 session['methodic_id'] = methodic_id
                 self.user_sessions[user_id] = session
-                await self.start_generation(query, session, methodic_info)
+                await self.start_work_generation(query, session, methodic_info)
             else:
                 await query.message.reply_text("❌ Методичка не найдена")
     
@@ -914,107 +952,6 @@ class CourseworkBot:
             logger.error(f"Upload error: {e}")
             await update.message.reply_text("❌ Ошибка загрузки файла")
     
-    async def handle_generation_requests(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик кнопок генерации"""
-        query = update.callback_query
-        await query.answer()
-        
-        user_id = query.from_user.id
-        data = query.data
-        session = self.user_sessions.get(user_id, {})
-        
-        if not session:
-            await query.message.reply_text("❌ Сессия не найдена. Начните с /start")
-            return
-        
-        if data == 'generate_full':
-            await self.generate_full_work(query, session)
-        elif data == 'regenerate_structure':
-            await self.generate_structure(query, session)
-    
-    async def generate_full_work(self, query, session):
-        """Генерирует полный текст работы и создает Word документ"""
-        generating_msg = await query.message.reply_text(
-            "🔄 Пишу работу и оформляю в Word...\n"
-            "Это может занять 3-5 минут. Пожалуйста, подождите."
-        )
-        
-        # Получаем структуру из БД
-        work_data = self.db.get_work(session['work_id'])
-        structure = work_data[5] if work_data else ""
-        
-        methodic_info = session.get('methodic_info', {})
-        
-        # Генерируем полный текст
-        full_content = self.writer.generate_full_work(
-            work_type=session['work_type'],
-            topic=session['topic'],
-            subject=session['subject'],
-            structure=structure,
-            methodic_info=methodic_info
-        )
-        
-        if full_content.startswith("❌") or full_content.startswith("⏰"):
-            await generating_msg.edit_text(f"❌ Не удалось создать работу: {full_content}")
-            return
-        
-        # Сохраняем контент
-        self.db.update_work_content(session['work_id'], full_content)
-        
-        # Создаем Word документ
-        user_info = f"{query.from_user.first_name} {query.from_user.last_name or ''}".strip()
-        
-        doc_stream = self.doc_generator.create_document(
-            work_type=session['work_type'],
-            topic=session['topic'],
-            subject=session['subject'],
-            content=full_content,
-            methodic_info=methodic_info,
-            user_info=user_info
-        )
-        
-        if not doc_stream:
-            await generating_msg.edit_text("❌ Ошибка при создании Word документа")
-            return
-        
-        # Отправляем документ пользователю
-        work_names = {
-            'coursework': 'Курсовая работа',
-            'essay': 'Реферат', 
-            'thesis': 'Дипломная работа'
-        }
-        
-        filename = f"{work_names[session['work_type']]} - {session['topic'][:30]}.docx"
-        
-        await query.message.reply_document(
-            document=doc_stream,
-            filename=filename,
-            caption=(
-                f"🎉 <b>{work_names[session['work_type']]} ГОТОВА!</b>\n\n"
-                f"📚 Тема: {session['topic']}\n"
-                f"🔬 Предмет: {session['subject']}\n"
-                f"📄 Формат: Word документ\n"
-                f"🎨 Оформление: по методичке\n\n"
-                f"<i>Документ готов к сдаче!</i>"
-            ),
-            parse_mode='HTML'
-        )
-        
-        await generating_msg.delete()
-        
-        # Предлагаем начать новую работу
-        keyboard = [
-            [InlineKeyboardButton("🔄 Написать новую работу", callback_data="new_work")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.reply_text(
-            "✅ <b>Работа завершена и отправлена в Word!</b>\n\n"
-            "Вы можете начать новую работу или использовать /start для выбора другого типа работы.",
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
-    
     async def handle_new_work(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик кнопки новой работы"""
         query = update.callback_query
@@ -1054,7 +991,6 @@ class CourseworkBot:
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CallbackQueryHandler(self.handle_button, pattern="^(work_|upload_methodic)"))
         application.add_handler(CallbackQueryHandler(self.handle_methodic_selection, pattern="^(methodic_|no_methodic)"))
-        application.add_handler(CallbackQueryHandler(self.handle_generation_requests, pattern="^(generate_full|regenerate_structure)"))
         application.add_handler(CallbackQueryHandler(self.handle_new_work, pattern="^new_work$"))
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
@@ -1064,6 +1000,7 @@ class CourseworkBot:
         print("=" * 60)
         print("🎓 Academic Auto-Writer Bot with Word Formatting Started!")
         print("📚 Автоматическое написание и оформление работ в Word")
+        print("⚡ Прямая генерация в Word без промежуточных сообщений")
         print("📄 Поддержка методичек для точного оформления")
         print("=" * 60)
         
