@@ -266,94 +266,6 @@ class AcademicWriter:
         
         return self._make_api_call(system_prompt, "Создай подробную структуру академической работы.")
     
-    def generate_introduction(self, work_type, topic, subject, structure, methodic_info=None):
-        """Генерирует введение"""
-        
-        methodic_text = ""
-        if methodic_info:
-            methodic_text = f"\nУЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ: {methodic_info}"
-        
-        system_prompt = f"""
-Ты - профессиональный академический писатель. Напиши ВВЕДЕНИЕ для {work_type} на тему "{topic}" по предмету "{subject}".
-
-СТРУКТУРА РАБОТЫ:
-{structure}
-{methodic_text}
-
-Введение должно содержать:
-1. Актуальность темы
-2. Цель работы
-3. Задачи исследования
-4. Объект и предмет исследования
-5. Методы исследования
-6. Теоретическая и практическая значимость
-
-Объем: {self._get_section_volume(work_type, 'введение')}
-Стиль: академический, научный
-
-Верни только текст введения без заголовка.
-"""
-        
-        return self._make_api_call(system_prompt, "Напиши качественное введение для академической работы.")
-    
-    def generate_main_part(self, work_type, topic, subject, structure, methodic_info=None):
-        """Генерирует основную часть"""
-        
-        methodic_text = ""
-        if methodic_info:
-            methodic_text = f"\nУЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ: {methodic_info}"
-        
-        system_prompt = f"""
-Ты - профессиональный академический писатель. Напиши ОСНОВНУЮ ЧАСТЬ для {work_type} на тему "{topic}" по предмету "{subject}".
-
-СТРУКТУРА РАБОТЫ:
-{structure}
-{methodic_text}
-
-Основная часть должна:
-1. Глубоко раскрывать тему
-2. Содержать теоретический анализ
-3. Включать практические аспекты (если применимо)
-4. Быть логически структурированной
-5. Содержать примеры, данные, исследования
-
-Объем: {self._get_section_volume(work_type, 'основная часть')}
-Стиль: академический, научный
-
-Верни только текст основной части без заголовка.
-"""
-        
-        return self._make_api_call(system_prompt, "Напиши развернутую основную часть для академической работы.")
-    
-    def generate_conclusion(self, work_type, topic, subject, structure, methodic_info=None):
-        """Генерирует заключение"""
-        
-        methodic_text = ""
-        if methodic_info:
-            methodic_text = f"\nУЧТИ ТРЕБОВАНИЯ МЕТОДИЧКИ: {methodic_info}"
-        
-        system_prompt = f"""
-Ты - профессиональный академический писатель. Напиши ЗАКЛЮЧЕНИЕ для {work_type} на тему "{topic}" по предмету "{subject}".
-
-СТРУКТУРА РАБОТЫ:
-{structure}
-{methodic_text}
-
-Заключение должно содержать:
-1. Основные выводы по работе
-2. Достигнута ли цель
-3. Решены ли задачи
-4. Практическую значимость работы
-5. Перспективы дальнейшего исследования
-
-Объем: {self._get_section_volume(work_type, 'заключение')}
-Стиль: академический, научный
-
-Верни только текст заключения без заголовка.
-"""
-        
-        return self._make_api_call(system_prompt, "Напиши качественное заключение для академической работы.")
-    
     def generate_full_work(self, work_type, topic, subject, structure, methodic_info=None):
         """Генерирует полный текст работы"""
         
@@ -394,15 +306,6 @@ class AcademicWriter:
             "thesis": "60-100 страниц"
         }
         return volumes.get(work_type, "20-40 страниц")
-    
-    def _get_section_volume(self, work_type, section_name):
-        base_volumes = {
-            "essay": {"введение": "2-3 стр", "основная часть": "10-15 стр", "заключение": "2-3 стр"},
-            "coursework": {"введение": "3-5 стр", "основная часть": "20-35 стр", "заключение": "3-5 стр"},
-            "thesis": {"введение": "5-8 стр", "основная часть": "45-80 стр", "заключение": "5-8 стр"}
-        }
-        volume_info = base_volumes.get(work_type, {})
-        return volume_info.get(section_name.lower(), "5-10 страниц")
     
     def _make_api_call(self, system_prompt, user_prompt):
         if not self.api_key:
@@ -544,7 +447,12 @@ class CourseworkBot:
     
     async def start_generation(self, update, session, methodic_info):
         """Начинает процесс генерации работы"""
-        user_id = session['user_id'] if 'user_id' in session else update.effective_user.id
+        # Определяем user_id в зависимости от типа update
+        if hasattr(update, 'effective_user'):
+            user_id = update.effective_user.id
+        else:
+            # Если это callback query, используем from_user
+            user_id = update.from_user.id
         
         # Создаем запись в БД
         work_id = self.db.create_work(
@@ -562,11 +470,15 @@ class CourseworkBot:
     
     async def generate_structure(self, update, session):
         """Генерирует структуру работы"""
-        generating_msg = await update.message.reply_text("🔄 Создаю структуру работы...")
+        # Определяем объект сообщения в зависимости от типа update
+        if hasattr(update, 'message'):
+            message_obj = update.message
+        else:
+            message_obj = update
         
-        methodic_info = None
-        if session.get('methodic_info'):
-            methodic_info = session['methodic_info']
+        generating_msg = await message_obj.reply_text("🔄 Создаю структуру работы...")
+        
+        methodic_info = session.get('methodic_info')
         
         structure = self.writer.generate_structure(
             work_type=session['work_type'],
@@ -584,7 +496,6 @@ class CourseworkBot:
         
         keyboard = [
             [InlineKeyboardButton("✅ Написать полную работу", callback_data="generate_full")],
-            [InlineKeyboardButton("📝 Написать по частям", callback_data="generate_parts")],
             [InlineKeyboardButton("🔄 Перегенерировать структуру", callback_data="regenerate_structure")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -686,10 +597,12 @@ class CourseworkBot:
         data = query.data
         session = self.user_sessions.get(user_id, {})
         
+        if not session:
+            await query.message.reply_text("❌ Сессия не найдена. Начните с /start")
+            return
+        
         if data == 'generate_full':
             await self.generate_full_work(query, session)
-        elif data == 'generate_parts':
-            await self.generate_by_parts(query, session)
         elif data == 'regenerate_structure':
             await self.generate_structure(query, session)
     
@@ -750,29 +663,43 @@ class CourseworkBot:
         
         await generating_msg.delete()
         
-        # Предлагаем скачать или перегенерировать
+        # Предлагаем начать новую работу
         keyboard = [
-            [InlineKeyboardButton("💾 Сохранить в файл", callback_data="save_to_file")],
-            [InlineKeyboardButton("🔄 Переписать работу", callback_data="rewrite_work")]
+            [InlineKeyboardButton("🔄 Написать новую работу", callback_data="new_work")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.message.reply_text(
             "✅ <b>Работа завершена!</b>\n\n"
-            "Вы можете сохранить работу в файл или переписать её.",
+            "Вы можете начать новую работу или использовать /start для выбора другого типа работы.",
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
     
-    async def generate_by_parts(self, query, session):
-        """Генерирует работу по частям"""
-        await query.message.reply_text(
-            "⏳ Функция поэтапной генерации в разработке...\n"
-            "Пока что используйте генерацию полной работы."
-        )
+    async def handle_new_work(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик кнопки новой работы"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Очищаем сессию и начинаем заново
+        user_id = query.from_user.id
+        if user_id in self.user_sessions:
+            del self.user_sessions[user_id]
+        
+        await self.start(query, context)
     
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {context.error}")
+        
+        # Отправляем сообщение об ошибке пользователю
+        try:
+            if update and hasattr(update, 'effective_chat'):
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ Произошла непредвиденная ошибка. Пожалуйста, попробуйте еще раз или начните с /start"
+                )
+        except Exception as e:
+            logger.error(f"Error in error handler: {e}")
     
     def run(self):
         if not BOT_TOKEN:
@@ -788,7 +715,8 @@ class CourseworkBot:
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CallbackQueryHandler(self.handle_button, pattern="^(work_|upload_methodic)"))
         application.add_handler(CallbackQueryHandler(self.handle_methodic_selection, pattern="^(methodic_|no_methodic)"))
-        application.add_handler(CallbackQueryHandler(self.handle_generation_requests, pattern="^(generate_full|generate_parts|regenerate_structure)"))
+        application.add_handler(CallbackQueryHandler(self.handle_generation_requests, pattern="^(generate_full|regenerate_structure)"))
+        application.add_handler(CallbackQueryHandler(self.handle_new_work, pattern="^new_work$"))
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
         application.add_error_handler(self.error_handler)
