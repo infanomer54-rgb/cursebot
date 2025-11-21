@@ -120,17 +120,46 @@ class Database:
     def create_work(self, user_id, work_type, topic, subject, methodic_info=None, student_info=None, teacher_info=None):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        methodic_json = json.dumps(methodic_info, ensure_ascii=False) if methodic_info else None
-        student_json = json.dumps(student_info, ensure_ascii=False) if student_info else None
-        teacher_json = json.dumps(teacher_info, ensure_ascii=False) if teacher_info else None
-        cursor.execute('''
-            INSERT INTO works (user_id, work_type, topic, subject, methodic_info, student_info, teacher_info)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, work_type, topic, subject, methodic_json, student_json, teacher_json))
-        work_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return work_id
+        
+        try:
+            # Безопасная сериализация JSON
+            methodic_json = None
+            if methodic_info:
+                try:
+                    methodic_json = json.dumps(methodic_info, ensure_ascii=False)
+                except (TypeError, ValueError) as e:
+                    logger.error(f"Error serializing methodic_info: {e}")
+                    methodic_json = json.dumps({}, ensure_ascii=False)
+            
+            student_json = None
+            if student_info:
+                try:
+                    student_json = json.dumps(student_info, ensure_ascii=False)
+                except (TypeError, ValueError) as e:
+                    logger.error(f"Error serializing student_info: {e}")
+                    student_json = json.dumps({}, ensure_ascii=False)
+            
+            teacher_json = None
+            if teacher_info:
+                try:
+                    teacher_json = json.dumps(teacher_info, ensure_ascii=False)
+                except (TypeError, ValueError) as e:
+                    logger.error(f"Error serializing teacher_info: {e}")
+                    teacher_json = json.dumps({}, ensure_ascii=False)
+            
+            cursor.execute('''
+                INSERT INTO works (user_id, work_type, topic, subject, methodic_info, student_info, teacher_info)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, work_type, topic, subject, methodic_json, student_json, teacher_json))
+            work_id = cursor.lastrowid
+            conn.commit()
+            return work_id
+        except Exception as e:
+            logger.error(f"Error creating work: {e}")
+            conn.rollback()
+            return None
+        finally:
+            conn.close()
     
     def update_work_content(self, work_id, content):
         conn = sqlite3.connect(self.db_path)
@@ -142,17 +171,43 @@ class Database:
     def add_methodic(self, filename, file_path, university_name, university_address, faculty, department, work_structure, formatting_style, user_id):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO methodics (filename, file_path, university_name, university_address, faculty, department, work_structure, formatting_style, uploaded_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (filename, file_path, university_name, university_address, faculty, department, 
-              json.dumps(work_structure, ensure_ascii=False), 
-              json.dumps(formatting_style, ensure_ascii=False), 
-              user_id))
-        methodic_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return methodic_id
+        
+        # Убеждаемся, что данные корректны перед сохранением
+        try:
+            work_structure_json = json.dumps(work_structure, ensure_ascii=False) if work_structure else json.dumps({
+                'required_sections': ['Введение', 'Основная часть', 'Заключение', 'Список литературы'],
+                'chapter_count': 3,
+                'has_introduction': True,
+                'has_conclusion': True,
+                'has_bibliography': True
+            }, ensure_ascii=False)
+            
+            formatting_style_json = json.dumps(formatting_style, ensure_ascii=False) if formatting_style else json.dumps({
+                'font_family': 'Times New Roman',
+                'font_size': '14',
+                'line_spacing': '1.5',
+                'margin_left': '3',
+                'margin_right': '1',
+                'margin_top': '2',
+                'margin_bottom': '2'
+            }, ensure_ascii=False)
+            
+            cursor.execute('''
+                INSERT INTO methodics (filename, file_path, university_name, university_address, faculty, department, work_structure, formatting_style, uploaded_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (filename, file_path, university_name, university_address, faculty, department, 
+                  work_structure_json, 
+                  formatting_style_json, 
+                  user_id))
+            methodic_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            return methodic_id
+        except Exception as e:
+            logger.error(f"Error saving methodic to database: {e}")
+            conn.rollback()
+            conn.close()
+            return None
     
     def get_methodics(self):
         conn = sqlite3.connect(self.db_path)
@@ -228,15 +283,69 @@ class DocumentProcessor:
             # Извлекаем стилистику оформления
             formatting_style = self._extract_formatting_style(text)
             
+            # Убеждаемся, что все обязательные поля присутствуют
+            if not university_info:
+                university_info = {
+                    'university_name': "Федеральное государственное автономное образовательное учреждение высшего образования",
+                    'university_address': "г. Москва, ул. Примерная, д. 123",
+                    'faculty': "Факультет информационных технологий",
+                    'department': "Кафедра информатики и вычислительной техники"
+                }
+            
+            if not work_structure:
+                work_structure = {
+                    'required_sections': ['Введение', 'Основная часть', 'Заключение', 'Список литературы'],
+                    'chapter_count': 3,
+                    'has_introduction': True,
+                    'has_conclusion': True,
+                    'has_bibliography': True
+                }
+            
+            if not formatting_style:
+                formatting_style = {
+                    'font_family': 'Times New Roman',
+                    'font_size': '14',
+                    'line_spacing': '1.5',
+                    'margin_left': '3',
+                    'margin_right': '1',
+                    'margin_top': '2',
+                    'margin_bottom': '2'
+                }
+            
             return {
                 'university': university_info,
                 'work_structure': work_structure,
                 'formatting_style': formatting_style,
-                'full_text': text[:4000]  # Ограничиваем размер для экономии памяти
+                'full_text': text[:4000]
             }
         except Exception as e:
             logger.error(f"Methodic info extraction error: {e}")
-            return None
+            # Возвращаем стандартные значения при ошибке
+            return {
+                'university': {
+                    'university_name': "Федеральное государственное автономное образовательное учреждение высшего образования",
+                    'university_address': "г. Москва, ул. Примерная, д. 123",
+                    'faculty': "Факультет информационных технологий",
+                    'department': "Кафедра информатики и вычислительной техники"
+                },
+                'work_structure': {
+                    'required_sections': ['Введение', 'Основная часть', 'Заключение', 'Список литературы'],
+                    'chapter_count': 3,
+                    'has_introduction': True,
+                    'has_conclusion': True,
+                    'has_bibliography': True
+                },
+                'formatting_style': {
+                    'font_family': 'Times New Roman',
+                    'font_size': '14',
+                    'line_spacing': '1.5',
+                    'margin_left': '3',
+                    'margin_right': '1',
+                    'margin_top': '2',
+                    'margin_bottom': '2'
+                },
+                'full_text': text[:2000] if text else ""
+            }
     
     def _extract_university_info(self, text):
         patterns = {
@@ -429,7 +538,7 @@ class WordDocumentGenerator:
     def _apply_formatting(self, methodic_info):
         """Применяет форматирование из методички"""
         try:
-            formatting = methodic_info.get('formatting_style', {})
+            formatting = methodic_info.get('formatting_style', {}) if methodic_info else {}
             font_family = formatting.get('font_family', 'Times New Roman')
             font_size = int(formatting.get('font_size', '14'))
             
@@ -462,7 +571,7 @@ class WordDocumentGenerator:
     def _create_title_page(self, work_type, topic, subject, methodic_info, student_info, teacher_info):
         """Создает титульный лист по методичке"""
         try:
-            university = methodic_info.get('university', {})
+            university = methodic_info.get('university', {}) if methodic_info else {}
             work_type_names = {
                 "coursework": "КУРСОВАЯ РАБОТА",
                 "essay": "РЕФЕРАТ",
@@ -474,7 +583,7 @@ class WordDocumentGenerator:
             # Верхняя часть - информация об учебном заведении
             university_paragraph = self.doc.add_paragraph()
             university_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            university_run = university_paragraph.add_run(university.get('university_name', ''))
+            university_run = university_paragraph.add_run(university.get('university_name', 'Федеральное государственное автономное образовательное учреждение высшего образования'))
             university_run.bold = True
             university_run.font.size = Pt(12)
             
@@ -482,19 +591,19 @@ class WordDocumentGenerator:
             if university.get('university_address'):
                 address_paragraph = self.doc.add_paragraph()
                 address_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                address_run = address_paragraph.add_run(university.get('university_address', ''))
+                address_run = address_paragraph.add_run(university.get('university_address', 'г. Москва, ул. Примерная, д. 123'))
                 address_run.font.size = Pt(10)
                 address_run.italic = True
             
             faculty_paragraph = self.doc.add_paragraph()
             faculty_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            faculty_run = faculty_paragraph.add_run(university.get('faculty', ''))
+            faculty_run = faculty_paragraph.add_run(university.get('faculty', 'Факультет информационных технологий'))
             faculty_run.bold = True
             faculty_run.font.size = Pt(12)
             
             department_paragraph = self.doc.add_paragraph()
             department_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            department_run = department_paragraph.add_run(university.get('department', ''))
+            department_run = department_paragraph.add_run(university.get('department', 'Кафедра информатики и вычислительной техники'))
             department_run.bold = True
             department_run.font.size = Pt(12)
             
@@ -528,7 +637,7 @@ class WordDocumentGenerator:
                 student_paragraph = self.doc.add_paragraph()
                 student_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 student_paragraph.paragraph_format.left_indent = Inches(3.5)
-                student_text = f"Выполнил(а): {student_info.get('full_name', '')}\nГруппа: {student_info.get('group', '')}"
+                student_text = f"Выполнил(а): {student_info.get('full_name', 'Студент')}\nГруппа: {student_info.get('group', 'Не указана')}"
                 student_run = student_paragraph.add_run(student_text)
                 student_run.font.size = Pt(12)
                 student_paragraph.paragraph_format.space_after = Pt(18)
@@ -538,7 +647,7 @@ class WordDocumentGenerator:
                 teacher_paragraph = self.doc.add_paragraph()
                 teacher_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 teacher_paragraph.paragraph_format.left_indent = Inches(3.5)
-                teacher_text = f"Проверил(а): {teacher_info.get('full_name', '')}"
+                teacher_text = f"Проверил(а): {teacher_info.get('full_name', 'Преподаватель')}"
                 teacher_run = teacher_paragraph.add_run(teacher_text)
                 teacher_run.font.size = Pt(12)
                 teacher_paragraph.paragraph_format.space_after = Pt(36)
@@ -561,7 +670,7 @@ class WordDocumentGenerator:
             toc_heading = self.doc.add_heading('СОДЕРЖАНИЕ', level=1)
             toc_heading.paragraph_format.space_after = Pt(12)
             
-            work_structure = methodic_info.get('work_structure', {})
+            work_structure = methodic_info.get('work_structure', {}) if methodic_info else {}
             required_sections = work_structure.get('required_sections', [])
             chapter_count = work_structure.get('chapter_count', 3)
             
@@ -612,7 +721,7 @@ class WordDocumentGenerator:
                     heading = self.doc.add_heading('ЗАКЛЮЧЕНИЕ', level=1)
                 else:  # Основная часть
                     chapter_num = i
-                    work_structure = methodic_info.get('work_structure', {})
+                    work_structure = methodic_info.get('work_structure', {}) if methodic_info else {}
                     chapter_count = work_structure.get('chapter_count', 3)
                     
                     if chapter_num <= chapter_count:
@@ -635,7 +744,7 @@ class WordDocumentGenerator:
     
     def _split_into_sections(self, content, methodic_info):
         """Разбивает текст на разделы согласно структуре из методички"""
-        work_structure = methodic_info.get('work_structure', {})
+        work_structure = methodic_info.get('work_structure', {}) if methodic_info else {}
         chapter_count = work_structure.get('chapter_count', 3)
         
         # Ищем разделы по заголовкам
@@ -1159,22 +1268,63 @@ class CourseworkBot:
             methodic_data = self.db.get_methodic(methodic_id)
             if methodic_data:
                 try:
+                    # Безопасная обработка JSON данных
+                    work_structure = {}
+                    formatting_style = {}
+                    
+                    # Обработка work_structure
+                    if methodic_data[6]:
+                        try:
+                            work_structure = json.loads(methodic_data[6])
+                        except (json.JSONDecodeError, TypeError):
+                            logger.warning(f"Invalid work_structure JSON for methodic {methodic_id}, using defaults")
+                            work_structure = {
+                                'required_sections': ['Введение', 'Основная часть', 'Заключение', 'Список литературы'],
+                                'chapter_count': 3,
+                                'has_introduction': True,
+                                'has_conclusion': True,
+                                'has_bibliography': True
+                            }
+                    
+                    # Обработка formatting_style
+                    if methodic_data[7]:
+                        try:
+                            formatting_style = json.loads(methodic_data[7])
+                        except (json.JSONDecodeError, TypeError):
+                            logger.warning(f"Invalid formatting_style JSON for methodic {methodic_id}, using defaults")
+                            formatting_style = {
+                                'font_family': 'Times New Roman',
+                                'font_size': '14',
+                                'line_spacing': '1.5',
+                                'margin_left': '3',
+                                'margin_right': '1',
+                                'margin_top': '2',
+                                'margin_bottom': '2'
+                            }
+                    
                     methodic_info = {
                         'university': {
-                            'university_name': methodic_data[2],
-                            'university_address': methodic_data[3],
-                            'faculty': methodic_data[4],
-                            'department': methodic_data[5]
+                            'university_name': methodic_data[2] or "Федеральное государственное автономное образовательное учреждение высшего образования",
+                            'university_address': methodic_data[3] or "г. Москва, ул. Примерная, д. 123",
+                            'faculty': methodic_data[4] or "Факультет информационных технологий",
+                            'department': methodic_data[5] or "Кафедра информатики и вычислительной техники"
                         },
-                        'work_structure': json.loads(methodic_data[6]) if methodic_data[6] else {},
-                        'formatting_style': json.loads(methodic_data[7]) if methodic_data[7] else {},
+                        'work_structure': work_structure,
+                        'formatting_style': formatting_style,
                     }
+                    
                     session['methodic_info'] = methodic_info
                     session['methodic_id'] = methodic_id
                     self.user_sessions[user_id] = session
                     
                     # Показываем информацию о извлеченных данных
                     university = methodic_info['university']
+                    work_structure_info = methodic_info['work_structure']
+                    
+                    structure_text = ", ".join(work_structure_info.get('required_sections', []))
+                    if not structure_text:
+                        structure_text = "Введение, Основная часть, Заключение, Список литературы"
+                    
                     await query.message.reply_text(
                         f"📋 <b>Данные из методички:</b>\n\n"
                         f"🏫 <b>Учебное заведение:</b>\n"
@@ -1182,16 +1332,26 @@ class CourseworkBot:
                         f"• Адрес: {university.get('university_address', '')}\n"
                         f"• Факультет: {university.get('faculty', '')}\n"
                         f"• Кафедра: {university.get('department', '')}\n\n"
+                        f"📝 <b>Структура работы:</b>\n"
+                        f"• Разделы: {structure_text}\n"
+                        f"• Глав: {work_structure_info.get('chapter_count', 3)}\n\n"
                         f"<i>Начинаю создание работы...</i>",
                         parse_mode='HTML'
                     )
                     
                     await self.start_work_generation(query, session, methodic_info)
+                    
                 except Exception as e:
                     logger.error(f"Error processing methodic data: {e}")
-                    await query.message.reply_text("❌ Ошибка при обработке данных методички")
+                    await query.message.reply_text(
+                        "❌ Ошибка при обработке данных методички. Использую стандартные настройки оформления."
+                    )
+                    # Используем стандартные настройки при ошибке
+                    session['methodic_info'] = None
+                    self.user_sessions[user_id] = session
+                    await self.start_work_generation(query, session, None)
             else:
-                await query.message.reply_text("❌ Методичка не найдена")
+                await query.message.reply_text("❌ Методичка не найдена в базе данных")
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик загрузки методичек"""
