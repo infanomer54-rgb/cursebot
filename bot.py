@@ -120,9 +120,9 @@ class Database:
     def create_work(self, user_id, work_type, topic, subject, methodic_info=None, student_info=None, teacher_info=None):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        methodic_json = json.dumps(methodic_info) if methodic_info else None
-        student_json = json.dumps(student_info) if student_info else None
-        teacher_json = json.dumps(teacher_info) if teacher_info else None
+        methodic_json = json.dumps(methodic_info, ensure_ascii=False) if methodic_info else None
+        student_json = json.dumps(student_info, ensure_ascii=False) if student_info else None
+        teacher_json = json.dumps(teacher_info, ensure_ascii=False) if teacher_info else None
         cursor.execute('''
             INSERT INTO works (user_id, work_type, topic, subject, methodic_info, student_info, teacher_info)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -145,7 +145,10 @@ class Database:
         cursor.execute('''
             INSERT INTO methodics (filename, file_path, university_name, university_address, faculty, department, work_structure, formatting_style, uploaded_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (filename, file_path, university_name, university_address, faculty, department, work_structure, formatting_style, user_id))
+        ''', (filename, file_path, university_name, university_address, faculty, department, 
+              json.dumps(work_structure, ensure_ascii=False), 
+              json.dumps(formatting_style, ensure_ascii=False), 
+              user_id))
         methodic_id = cursor.lastrowid
         conn.commit()
         conn.close()
@@ -179,7 +182,7 @@ class DocumentProcessor:
                         text += page_text + "\n"
                 return text.strip()
         except Exception as e:
-            logger.error(f"PDF error: {e}")
+            logger.error(f"PDF extraction error: {e}")
             return ""
     
     def extract_text_from_docx(self, file_path):
@@ -187,7 +190,7 @@ class DocumentProcessor:
             text = docx2txt.process(file_path)
             return text.strip() if text else ""
         except Exception as e:
-            logger.error(f"DOCX error: {e}")
+            logger.error(f"DOCX extraction error: {e}")
             return ""
     
     async def extract_text_from_txt(self, file_path):
@@ -195,7 +198,7 @@ class DocumentProcessor:
             async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
                 return await file.read()
         except Exception as e:
-            logger.error(f"TXT error: {e}")
+            logger.error(f"TXT extraction error: {e}")
             return ""
     
     async def process_methodic(self, file_path):
@@ -217,19 +220,23 @@ class DocumentProcessor:
         return self.extract_methodic_info(text)
     
     def extract_methodic_info(self, text):
-        # Извлекаем информацию об учебном заведении
-        university_info = self._extract_university_info(text)
-        # Извлекаем структуру работы
-        work_structure = self._extract_work_structure(text)
-        # Извлекаем стилистику оформления
-        formatting_style = self._extract_formatting_style(text)
-        
-        return {
-            'university': university_info,
-            'work_structure': work_structure,
-            'formatting_style': formatting_style,
-            'full_text': text[:4000]
-        }
+        try:
+            # Извлекаем информацию об учебном заведении
+            university_info = self._extract_university_info(text)
+            # Извлекаем структуру работы
+            work_structure = self._extract_work_structure(text)
+            # Извлекаем стилистику оформления
+            formatting_style = self._extract_formatting_style(text)
+            
+            return {
+                'university': university_info,
+                'work_structure': work_structure,
+                'formatting_style': formatting_style,
+                'full_text': text[:4000]  # Ограничиваем размер для экономии памяти
+            }
+        except Exception as e:
+            logger.error(f"Methodic info extraction error: {e}")
+            return None
     
     def _extract_university_info(self, text):
         patterns = {
@@ -415,6 +422,9 @@ class WordDocumentGenerator:
         except Exception as e:
             logger.error(f"Error creating Word document: {e}")
             return None
+        finally:
+            # Очищаем память
+            self.doc = None
     
     def _apply_formatting(self, methodic_info):
         """Применяет форматирование из методички"""
@@ -712,17 +722,17 @@ class AcademicWriter:
         )
         
         # Проверяем объем и при необходимости дополняем
-        current_word_count = len(full_content.split())
-        target_word_count = self._get_target_word_count(work_type)
-        
-        if current_word_count < target_word_count * 0.8:  # Если объем меньше 80% от целевого
-            additional_content = self._make_api_call(
-                system_prompt,
-                f"Дополни работу, добавив еще {target_word_count - current_word_count} слов. Увеличь практическую часть и добавь больше примеров."
-            )
-            if not additional_content.startswith("❌"):
-                full_work = full_content + "\n\n" + additional_content
-                return full_work
+        if not full_content.startswith("❌") and not full_content.startswith("⏰"):
+            current_word_count = len(full_content.split())
+            target_word_count = self._get_target_word_count(work_type)
+            
+            if current_word_count < target_word_count * 0.8:  # Если объем меньше 80% от целевого
+                additional_content = self._make_api_call(
+                    system_prompt,
+                    f"Дополни работу, добавив еще {target_word_count - current_word_count} слов. Увеличь практическую часть и добавь больше примеров."
+                )
+                if not additional_content.startswith("❌") and not additional_content.startswith("⏰"):
+                    full_content = full_content + "\n\n" + additional_content
         
         return full_content
     
@@ -775,6 +785,7 @@ class AcademicWriter:
     
     def _make_api_call(self, system_prompt, user_prompt):
         if not self.api_key:
+            logger.error("DeepSeek API key not configured")
             return "❌ Ошибка: API ключ DeepSeek не настроен"
         
         headers = {
@@ -793,24 +804,25 @@ class AcademicWriter:
         }
         
         try:
-            logger.info(f"Отправка запроса к DeepSeek API...")
+            logger.info(f"Sending request to DeepSeek API...")
             response = requests.post(self.api_url, headers=headers, json=data, timeout=180)
             response.raise_for_status()
             result = response.json()
             content = result['choices'][0]['message']['content']
             
             word_count = len(content.split())
-            logger.info(f"Получен ответ: {word_count} слов")
+            logger.info(f"Received response: {word_count} words")
             
             return content
             
         except requests.exceptions.Timeout:
+            logger.error("DeepSeek API timeout")
             return "⏰ Время ожидания истекло. Попробуйте еще раз."
         except requests.exceptions.RequestException as e:
-            logger.error(f"API error: {e}")
+            logger.error(f"DeepSeek API request error: {e}")
             return "❌ Ошибка соединения с сервисом."
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected API error: {e}")
             return f"❌ Ошибка генерации: {str(e)}"
 
 class CourseworkBot:
@@ -876,6 +888,11 @@ class CourseworkBot:
         user_id = update.effective_user.id
         user_message = update.message.text.strip()
         
+        # Валидация ввода
+        if not user_message or len(user_message) < 2:
+            await update.message.reply_text("❌ Пожалуйста, введите корректные данные")
+            return
+        
         session = self.user_sessions.get(user_id, {})
         
         if not session:
@@ -886,6 +903,10 @@ class CourseworkBot:
         
         if current_stage == 'subject':
             # Получили предмет, запрашиваем тему
+            if len(user_message) > 100:
+                await update.message.reply_text("❌ Название предмета слишком длинное. Пожалуйста, введите более короткое название.")
+                return
+                
             session['subject'] = user_message
             session['stage'] = 'topic'
             self.user_sessions[user_id] = session
@@ -897,12 +918,13 @@ class CourseworkBot:
         
         elif current_stage == 'topic':
             # Получили тему, запрашиваем ФИО студента
+            if len(user_message) > 200:
+                await update.message.reply_text("❌ Тема слишком длинная. Пожалуйста, введите более короткую тему.")
+                return
+                
             session['topic'] = user_message
             session['stage'] = 'student_name'
             self.user_sessions[user_id] = session
-            
-            user_data = self.db.get_user(user_id)
-            default_name = f"{user_data[2]} {user_data[3]}" if user_data else ""
             
             await update.message.reply_text(
                 f"🎯 Тема: <b>{user_message}</b>\n\nВведите ваше ФИО (например, Иванов Иван Иванович):",
@@ -911,6 +933,10 @@ class CourseworkBot:
         
         elif current_stage == 'student_name':
             # Получили ФИО студента, запрашиваем группу
+            if len(user_message) > 100:
+                await update.message.reply_text("❌ ФИО слишком длинное. Пожалуйста, введите корректное ФИО.")
+                return
+                
             session['student_name'] = user_message
             session['stage'] = 'group'
             self.user_sessions[user_id] = session
@@ -922,6 +948,10 @@ class CourseworkBot:
         
         elif current_stage == 'group':
             # Получили группу, запрашиваем ФИО преподавателя
+            if len(user_message) > 50:
+                await update.message.reply_text("❌ Название группы слишком длинное. Пожалуйста, введите корректное название группы.")
+                return
+                
             session['group'] = user_message
             session['stage'] = 'teacher_name'
             self.user_sessions[user_id] = session
@@ -936,6 +966,10 @@ class CourseworkBot:
         
         elif current_stage == 'teacher_name':
             # Получили ФИО преподавателя, предлагаем выбрать методичку
+            if len(user_message) > 100:
+                await update.message.reply_text("❌ ФИО преподавателя слишком длинное. Пожалуйста, введите корректное ФИО.")
+                return
+                
             session['teacher_name'] = user_message
             session['stage'] = 'methodic_choice'
             self.user_sessions[user_id] = session
@@ -961,141 +995,150 @@ class CourseworkBot:
         """Начинает процесс генерации работы"""
         user_id = update.effective_user.id if hasattr(update, 'effective_user') else update.from_user.id
         
-        # Собираем информацию о студенте
-        student_info = {
-            'full_name': session.get('student_name', 'Студент'),
-            'group': session.get('group', 'Не указана')
-        }
-        
-        # Собираем информацию о преподавателе
-        teacher_info = {
-            'full_name': session.get('teacher_name', 'Преподаватель')
-        }
-        
-        # Создаем запись в БД
-        work_id = self.db.create_work(
-            user_id=user_id,
-            work_type=session['work_type'],
-            topic=session['topic'],
-            subject=session['subject'],
-            methodic_info=methodic_info,
-            student_info=student_info,
-            teacher_info=teacher_info
-        )
-        session['work_id'] = work_id
-        session['student_info'] = student_info
-        session['teacher_info'] = teacher_info
-        self.user_sessions[user_id] = session
-        
-        # Начинаем генерацию работы
-        await self.generate_complete_work(update, session)
+        try:
+            # Собираем информацию о студенте
+            student_info = {
+                'full_name': session.get('student_name', 'Студент'),
+                'group': session.get('group', 'Не указана')
+            }
+            
+            # Собираем информацию о преподавателе
+            teacher_info = {
+                'full_name': session.get('teacher_name', 'Преподаватель')
+            }
+            
+            # Создаем запись в БД
+            work_id = self.db.create_work(
+                user_id=user_id,
+                work_type=session['work_type'],
+                topic=session['topic'],
+                subject=session['subject'],
+                methodic_info=methodic_info,
+                student_info=student_info,
+                teacher_info=teacher_info
+            )
+            session['work_id'] = work_id
+            session['student_info'] = student_info
+            session['teacher_info'] = teacher_info
+            self.user_sessions[user_id] = session
+            
+            # Начинаем генерацию работы
+            await self.generate_complete_work(update, session)
+        except Exception as e:
+            logger.error(f"Error starting work generation: {e}")
+            await self._send_error_message(update, "Ошибка при начале генерации работы")
     
     async def generate_complete_work(self, update, session):
         """Генерирует полную работу и создает Word документ"""
         message_obj = update.message if hasattr(update, 'message') else update
         
-        # Отправляем сообщение о начале генерации
-        progress_msg = await message_obj.reply_text(
-            "🔄 <b>Начинаю создание работы с интеллектуальным оформлением...</b>\n\n"
-            "📝 Анализирую структуру из методички...\n"
-            "⏳ Это займет 5-10 минут\n"
-            "📄 Результат будет в Word с точным оформлением",
-            parse_mode='HTML'
-        )
-        
-        methodic_info = session.get('methodic_info', {})
-        
-        # Генерируем полную работу
-        full_content = self.writer.generate_complete_work(
-            work_type=session['work_type'],
-            topic=session['topic'],
-            subject=session['subject'],
-            methodic_info=methodic_info
-        )
-        
-        if full_content.startswith("❌") or full_content.startswith("⏰"):
-            await progress_msg.edit_text(f"❌ Не удалось создать работу: {full_content}")
-            return
-        
-        # Проверяем объем работы
-        word_count = len(full_content.split())
-        
-        await progress_msg.edit_text(
-            f"🔄 <b>Работа написана! Создаю Word документ...</b>\n\n"
-            f"📊 Объем: {word_count} слов\n"
-            f"🎨 Применяю оформление из методички\n"
-            f"📑 Формирую титульный лист",
-            parse_mode='HTML'
-        )
-        
-        # Сохраняем контент в БД
-        self.db.update_work_content(session['work_id'], full_content)
-        
-        # Создаем Word документ
-        doc_stream = self.doc_generator.create_document(
-            work_type=session['work_type'],
-            topic=session['topic'],
-            subject=session['subject'],
-            content=full_content,
-            methodic_info=methodic_info,
-            student_info=session.get('student_info'),
-            teacher_info=session.get('teacher_info')
-        )
-        
-        if not doc_stream:
-            await progress_msg.edit_text("❌ Ошибка при создании Word документа")
-            return
-        
-        # Отправляем документ пользователю
-        work_names = {
-            'coursework': 'Курсовая работа',
-            'essay': 'Реферат', 
-            'thesis': 'Дипломная работа'
-        }
-        
-        filename = f"{work_names[session['work_type']]} - {session['topic'][:30]}.docx"
-        
-        # Формируем информацию об оформлении
-        formatting_info = ""
-        if methodic_info:
-            university = methodic_info.get('university', {})
-            formatting_info = f"🏫 ВУЗ: {university.get('university_name', '')[:30]}...\n"
-        
-        await message_obj.reply_document(
-            document=doc_stream,
-            filename=filename,
-            caption=(
-                f"🎉 <b>{work_names[session['work_type']]} ГОТОВА!</b>\n\n"
-                f"📚 Тема: {session['topic']}\n"
-                f"🔬 Предмет: {session['subject']}\n"
-                f"📄 Формат: Word документ\n"
-                f"📏 Объем: {word_count} слов\n"
-                f"{formatting_info}"
-                f"👤 Студент: {session.get('student_info', {}).get('full_name', '')}\n\n"
-                f"<i>✅ Документ полностью готов к сдаче!</i>"
-            ),
-            parse_mode='HTML'
-        )
-        
-        await progress_msg.delete()
-        
-        # Предлагаем начать новую работу
-        keyboard = [
-            [InlineKeyboardButton("🔄 Написать новую работу", callback_data="new_work")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await message_obj.reply_text(
-            f"✨ <b>Работа успешно завершена!</b>\n\n"
-            f"📊 Итоговая статистика:\n"
-            f"• Объем: {word_count} слов\n"
-            f"• Формат: Word документ\n"
-            f"• Оформление: {'по методичке' if methodic_info else 'стандартное'}\n"
-            f"• Качество: готова к сдаче\n\n"
-            f"Вы можете начать новую работу:",
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        try:
+            # Отправляем сообщение о начале генерации
+            progress_msg = await message_obj.reply_text(
+                "🔄 <b>Начинаю создание работы с интеллектуальным оформлением...</b>\n\n"
+                "📝 Анализирую структуру из методички...\n"
+                "⏳ Это займет 5-10 минут\n"
+                "📄 Результат будет в Word с точным оформлением",
+                parse_mode='HTML'
+            )
+            
+            methodic_info = session.get('methodic_info', {})
+            
+            # Генерируем полную работу
+            full_content = self.writer.generate_complete_work(
+                work_type=session['work_type'],
+                topic=session['topic'],
+                subject=session['subject'],
+                methodic_info=methodic_info
+            )
+            
+            if full_content.startswith("❌") or full_content.startswith("⏰"):
+                await progress_msg.edit_text(f"❌ Не удалось создать работу: {full_content}")
+                return
+            
+            # Проверяем объем работы
+            word_count = len(full_content.split())
+            
+            await progress_msg.edit_text(
+                f"🔄 <b>Работа написана! Создаю Word документ...</b>\n\n"
+                f"📊 Объем: {word_count} слов\n"
+                f"🎨 Применяю оформление из методички\n"
+                f"📑 Формирую титульный лист",
+                parse_mode='HTML'
+            )
+            
+            # Сохраняем контент в БД
+            self.db.update_work_content(session['work_id'], full_content)
+            
+            # Создаем Word документ
+            doc_stream = self.doc_generator.create_document(
+                work_type=session['work_type'],
+                topic=session['topic'],
+                subject=session['subject'],
+                content=full_content,
+                methodic_info=methodic_info,
+                student_info=session.get('student_info'),
+                teacher_info=session.get('teacher_info')
+            )
+            
+            if not doc_stream:
+                await progress_msg.edit_text("❌ Ошибка при создании Word документа")
+                return
+            
+            # Отправляем документ пользователю
+            work_names = {
+                'coursework': 'Курсовая работа',
+                'essay': 'Реферат', 
+                'thesis': 'Дипломная работа'
+            }
+            
+            filename = f"{work_names[session['work_type']]} - {session['topic'][:30]}.docx"
+            
+            # Формируем информацию об оформлении
+            formatting_info = ""
+            if methodic_info:
+                university = methodic_info.get('university', {})
+                formatting_info = f"🏫 ВУЗ: {university.get('university_name', '')[:30]}...\n"
+            
+            await message_obj.reply_document(
+                document=doc_stream,
+                filename=filename,
+                caption=(
+                    f"🎉 <b>{work_names[session['work_type']]} ГОТОВА!</b>\n\n"
+                    f"📚 Тема: {session['topic']}\n"
+                    f"🔬 Предмет: {session['subject']}\n"
+                    f"📄 Формат: Word документ\n"
+                    f"📏 Объем: {word_count} слов\n"
+                    f"{formatting_info}"
+                    f"👤 Студент: {session.get('student_info', {}).get('full_name', '')}\n\n"
+                    f"<i>✅ Документ полностью готов к сдаче!</i>"
+                ),
+                parse_mode='HTML'
+            )
+            
+            await progress_msg.delete()
+            
+            # Предлагаем начать новую работу
+            keyboard = [
+                [InlineKeyboardButton("🔄 Написать новую работу", callback_data="new_work")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await message_obj.reply_text(
+                f"✨ <b>Работа успешно завершена!</b>\n\n"
+                f"📊 Итоговая статистика:\n"
+                f"• Объем: {word_count} слов\n"
+                f"• Формат: Word документ\n"
+                f"• Оформление: {'по методичке' if methodic_info else 'стандартное'}\n"
+                f"• Качество: готова к сдаче\n\n"
+                f"Вы можете начать новую работу:",
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating complete work: {e}")
+            await self._send_error_message(update, "Ошибка при генерации работы")
     
     async def handle_methodic_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик выбора методички"""
@@ -1115,34 +1158,38 @@ class CourseworkBot:
             methodic_id = int(data.split('_')[1])
             methodic_data = self.db.get_methodic(methodic_id)
             if methodic_data:
-                methodic_info = {
-                    'university': {
-                        'university_name': methodic_data[2],
-                        'university_address': methodic_data[3],
-                        'faculty': methodic_data[4],
-                        'department': methodic_data[5]
-                    },
-                    'work_structure': json.loads(methodic_data[6]) if methodic_data[6] else {},
-                    'formatting_style': json.loads(methodic_data[7]) if methodic_data[7] else {},
-                }
-                session['methodic_info'] = methodic_info
-                session['methodic_id'] = methodic_id
-                self.user_sessions[user_id] = session
-                
-                # Показываем информацию о извлеченных данных
-                university = methodic_info['university']
-                await query.message.reply_text(
-                    f"📋 <b>Данные из методички:</b>\n\n"
-                    f"🏫 <b>Учебное заведение:</b>\n"
-                    f"• Название: {university.get('university_name', '')}\n"
-                    f"• Адрес: {university.get('university_address', '')}\n"
-                    f"• Факультет: {university.get('faculty', '')}\n"
-                    f"• Кафедра: {university.get('department', '')}\n\n"
-                    f"<i>Начинаю создание работы...</i>",
-                    parse_mode='HTML'
-                )
-                
-                await self.start_work_generation(query, session, methodic_info)
+                try:
+                    methodic_info = {
+                        'university': {
+                            'university_name': methodic_data[2],
+                            'university_address': methodic_data[3],
+                            'faculty': methodic_data[4],
+                            'department': methodic_data[5]
+                        },
+                        'work_structure': json.loads(methodic_data[6]) if methodic_data[6] else {},
+                        'formatting_style': json.loads(methodic_data[7]) if methodic_data[7] else {},
+                    }
+                    session['methodic_info'] = methodic_info
+                    session['methodic_id'] = methodic_id
+                    self.user_sessions[user_id] = session
+                    
+                    # Показываем информацию о извлеченных данных
+                    university = methodic_info['university']
+                    await query.message.reply_text(
+                        f"📋 <b>Данные из методички:</b>\n\n"
+                        f"🏫 <b>Учебное заведение:</b>\n"
+                        f"• Название: {university.get('university_name', '')}\n"
+                        f"• Адрес: {university.get('university_address', '')}\n"
+                        f"• Факультет: {university.get('faculty', '')}\n"
+                        f"• Кафедра: {university.get('department', '')}\n\n"
+                        f"<i>Начинаю создание работы...</i>",
+                        parse_mode='HTML'
+                    )
+                    
+                    await self.start_work_generation(query, session, methodic_info)
+                except Exception as e:
+                    logger.error(f"Error processing methodic data: {e}")
+                    await query.message.reply_text("❌ Ошибка при обработке данных методички")
             else:
                 await query.message.reply_text("❌ Методичка не найдена")
     
@@ -1158,6 +1205,11 @@ class CourseworkBot:
             allowed_extensions = ['pdf', 'docx', 'txt']
             if file_extension not in allowed_extensions:
                 await update.message.reply_text("❌ Поддерживаются только PDF, DOCX, TXT файлы")
+                return
+            
+            # Проверяем размер файла (максимум 20MB)
+            if document.file_size > 20 * 1024 * 1024:
+                await update.message.reply_text("❌ Файл слишком большой. Максимальный размер - 20MB")
                 return
             
             file = await context.bot.get_file(document.file_id)
@@ -1180,8 +1232,8 @@ class CourseworkBot:
                 university_address=methodic_info['university'].get('university_address', ''),
                 faculty=methodic_info['university'].get('faculty', ''),
                 department=methodic_info['university'].get('department', ''),
-                work_structure=json.dumps(methodic_info['work_structure']),
-                formatting_style=json.dumps(methodic_info['formatting_style']),
+                work_structure=methodic_info['work_structure'],
+                formatting_style=methodic_info['formatting_style'],
                 user_id=user_id
             )
             
@@ -1217,8 +1269,19 @@ class CourseworkBot:
         
         await self.start(query, context)
     
+    async def _send_error_message(self, update, message):
+        """Утилита для отправки сообщений об ошибках"""
+        try:
+            if hasattr(update, 'message'):
+                await update.message.reply_text(f"❌ {message}")
+            else:
+                await update.edit_message_text(f"❌ {message}")
+        except Exception as e:
+            logger.error(f"Error sending error message: {e}")
+    
     async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.error(f"Error: {context.error}")
+        """Глобальный обработчик ошибок"""
+        logger.error(f"Error: {context.error}", exc_info=True)
         
         try:
             if update and hasattr(update, 'effective_chat'):
@@ -1230,6 +1293,7 @@ class CourseworkBot:
             logger.error(f"Error in error handler: {e}")
     
     def run(self):
+        """Запуск бота"""
         if not BOT_TOKEN:
             logger.error("❌ BOT_TOKEN не найден!")
             return
@@ -1237,27 +1301,31 @@ class CourseworkBot:
         if not DEEPSEEK_API_KEY:
             logger.warning("⚠️ DEEPSEEK_API_KEY не найден! Бот будет работать с ограничениями.")
         
-        application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Обработчики
-        application.add_handler(CommandHandler("start", self.start))
-        application.add_handler(CallbackQueryHandler(self.handle_button, pattern="^(work_|upload_methodic)"))
-        application.add_handler(CallbackQueryHandler(self.handle_methodic_selection, pattern="^(methodic_|no_methodic)"))
-        application.add_handler(CallbackQueryHandler(self.handle_new_work, pattern="^new_work$"))
-        application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
-        application.add_error_handler(self.error_handler)
-        
-        logger.info("🤖 Умный бот с интеллектуальным оформлением запущен!")
-        print("=" * 60)
-        print("🎓 Smart Academic Writer with Intelligent Formatting Started!")
-        print("📚 Извлечение структуры и оформления из методичек")
-        print("🏫 Автоматическое оформление титульного листа")
-        print("👤 Упрощенный сбор данных о студенте и преподавателе")
-        print("📏 Увеличенный объем и качество работ")
-        print("=" * 60)
-        
-        application.run_polling()
+        try:
+            application = Application.builder().token(BOT_TOKEN).build()
+            
+            # Обработчики
+            application.add_handler(CommandHandler("start", self.start))
+            application.add_handler(CallbackQueryHandler(self.handle_button, pattern="^(work_|upload_methodic)"))
+            application.add_handler(CallbackQueryHandler(self.handle_methodic_selection, pattern="^(methodic_|no_methodic)"))
+            application.add_handler(CallbackQueryHandler(self.handle_new_work, pattern="^new_work$"))
+            application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
+            application.add_error_handler(self.error_handler)
+            
+            logger.info("🤖 Умный бот с интеллектуальным оформлением запущен!")
+            print("=" * 60)
+            print("🎓 Smart Academic Writer with Intelligent Formatting Started!")
+            print("📚 Извлечение структуры и оформления из методичек")
+            print("🏫 Автоматическое оформление титульного листа")
+            print("👤 Упрощенный сбор данных о студенте и преподавателе")
+            print("📏 Увеличенный объем и качество работ")
+            print("=" * 60)
+            
+            application.run_polling()
+            
+        except Exception as e:
+            logger.error(f"Failed to start bot: {e}")
 
 if __name__ == "__main__":
     bot = CourseworkBot()
